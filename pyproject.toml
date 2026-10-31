@@ -11,6 +11,9 @@ requires-python = ">=3.11"
 license = {text = "Proprietary - all rights reserved"}
 dependencies = []
 
+[project.optional-dependencies]
+sip = ["baresip-python==0.6.0"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
