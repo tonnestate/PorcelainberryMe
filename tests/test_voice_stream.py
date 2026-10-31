@@ -2,6 +2,7 @@
 import asyncio
 from io import BytesIO
 from types import SimpleNamespace
+import threading
 import unittest
 from unittest.mock import patch
 import wave
@@ -134,6 +135,41 @@ class VoiceToSipTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(VoiceUnavailable, "VOICE_SIP_FORMAT_MISMATCH"):
             await turn.play("Hallo")
         self.assertEqual(sip.frames, [])
+
+    async def test_legacy_python_inference_stays_single_after_barge_in(self):
+        started = threading.Event()
+        finish = threading.Event()
+        invocations = []
+
+        def older_installed_pypi_engine(text):
+            invocations.append(text)
+            started.set()
+            finish.wait(timeout=4)
+            return SpeechResult(wav_data(), "audio/wav")
+
+        source = ExistingPythonWavVoice(PythonVoiceBridge(older_installed_pypi_engine))
+        sip = FakeSip()
+        turn = SipVoiceTurn(sip, source, authorize=lambda session: True)
+        try:
+            running = asyncio.create_task(turn.play("First"))
+            self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            self.assertTrue(await turn.interrupt())
+            self.assertEqual((await running).state, "INTERRUPTED")
+            with self.assertRaisesRegex(VoiceUnavailable, "PYTHON_VOICE_INFERENCE_BUSY"):
+                await turn.play("Second while first still synthesizing")
+            self.assertEqual(invocations, ["First"])
+            finish.set()
+            for _ in range(100):
+                if source._inference is None:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertIsNone(source._inference)
+            result = await turn.play("After completed synthesis")
+            self.assertEqual(result.state, "COMPLETED")
+            self.assertEqual(invocations,
+                             ["First", "After completed synthesis"])
+        finally:
+            finish.set()
 
     async def test_no_provider_autoload_and_format_constraints(self):
         with self.assertRaisesRegex(VoiceUnavailable, "PYTHON_VOICE_NOT_BOUND"):
