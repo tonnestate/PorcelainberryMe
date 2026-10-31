@@ -34,7 +34,10 @@ def _now() -> str:
 
 
 class Ledger:
-    def __init__(self, database: str | Path):
+    def __init__(self, database: str | Path, *, max_inbound_rows: int = 1000):
+        if not isinstance(max_inbound_rows, int) or not 1 <= max_inbound_rows <= 100000:
+            raise ValueError("invalid_inbound_capacity")
+        self.max_inbound_rows = max_inbound_rows
         self.database = str(database)
         location = Path(self.database)
         location.parent.mkdir(parents=True, exist_ok=True)
@@ -89,24 +92,34 @@ class Ledger:
             db.close()
 
     def ingest(self, event: InboundEvent) -> dict:
+        """Atomic idempotent ingest with a bounded on-disk queue.
+
+        Completed rows remain for audit/dedup; a full ledger rejects new IDs
+        rather than deleting unreviewed data or silently losing a message.
+        """
         payload = event.to_dict()
         digest = fingerprint(payload)
         with self._lock, self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT digest,state FROM inbound WHERE tenant_id=? AND channel=? AND external_id=?",
+                (event.tenant_id, event.channel, event.external_id),
+            ).fetchone()
+            if row is not None:
+                if row["digest"] != digest:
+                    raise IdempotencyConflict("inbound_id_reused_with_different_payload")
+                return {"new": False, "state": row["state"]}
+            count = db.execute("SELECT COUNT(*) FROM inbound").fetchone()[0]
+            if count >= self.max_inbound_rows:
+                raise OverflowError("inbound_capacity_exceeded")
             db.execute(
-                "INSERT OR IGNORE INTO inbound "
+                "INSERT INTO inbound "
                 "(tenant_id,channel,external_id,payload,digest,state,created_at,updated_at) "
                 "VALUES (?,?,?,?,?,'PENDING',?,?)",
                 (event.tenant_id, event.channel, event.external_id,
                  json.dumps(payload, ensure_ascii=False), digest, _now(), _now()),
             )
-            inserted = db.execute("SELECT changes()").fetchone()[0] == 1
-            row = db.execute(
-                "SELECT digest,state FROM inbound WHERE tenant_id=? AND channel=? AND external_id=?",
-                (event.tenant_id, event.channel, event.external_id),
-            ).fetchone()
-            if row["digest"] != digest:
-                raise IdempotencyConflict("inbound_id_reused_with_different_payload")
-            return {"new": inserted, "state": row["state"]}
+            return {"new": True, "state": "PENDING"}
 
     def pending(self, *, tenant_id: str, limit: int = 50) -> list[InboundEvent]:
         """Read-only per-tenant projection, NOT a safe processing claim."""
