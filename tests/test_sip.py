@@ -194,6 +194,46 @@ class SipTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await line.close()
 
+    async def test_authorizer_exception_and_malformed_peer_fail_closed(self):
+        def broken_policy(event):
+            raise RuntimeError("policy dependency unavailable")
+        line = await self.line(incoming=broken_policy).open()
+        try:
+            for peer in ("sip:caller@example.test", "bad\r\nheader"):
+                call = FakeCall(peer)
+                self.backend.ua.handler(call)
+                self.assertIsNone(await line.next_incoming(timeout=1))
+                self.assertFalse(call.answered)
+                self.assertTrue(call.hung_up)
+        finally:
+            await line.close()
+
+    async def test_concurrent_outbound_dial_is_prevented(self):
+        line = await self.line(outgoing=lambda uri: True).open()
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        calls = []
+
+        async def slow_dial(destination):
+            calls.append(destination)
+            started.set()
+            await finish.wait()
+            return FakeCall(destination)
+
+        self.backend.ua.dial = slow_dial
+        try:
+            first = asyncio.create_task(line.dial("sip:200@example.test"))
+            await asyncio.wait_for(started.wait(), timeout=2)
+            with self.assertRaisesRegex(RuntimeError, "sip_line_busy"):
+                await line.dial("sip:200@example.test")
+            self.assertEqual(len(calls), 1)
+            finish.set()
+            session = await first
+            self.assertEqual(session.identity.peer, "sip:200@example.test")
+        finally:
+            finish.set()
+            await line.close()
+
     def test_invalid_credentials(self):
         with self.assertRaises(ValueError):
             SipCredentials(user="bad @", password="p", domain="example.test")
