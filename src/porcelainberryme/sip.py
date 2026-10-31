@@ -141,6 +141,7 @@ class SipLine:
         self._ua = None
         self._incoming = asyncio.Queue(maxsize=8)
         self._active = None
+        self._dial_pending = False
 
     async def open(self):
         if self._runtime is not None:
@@ -203,7 +204,7 @@ class SipLine:
                 text="",
                 kind="call_started",
             )
-            allowed = self._active is None and self.authorize_incoming(event) is True
+            allowed = self._active is None and not self._dial_pending and self.authorize_incoming(event) is True
         except Exception:
             allowed = False
         if not allowed:
@@ -213,7 +214,7 @@ class SipLine:
         self._watch_close(call)
         try:
             await call.answer()
-            await call.wait_established()
+            await asyncio.wait_for(call.wait_established(), timeout=30)
         except Exception:
             self._active = None
             try:
@@ -235,20 +236,26 @@ class SipLine:
             raise ValueError("invalid_sip_destination")
         if self.authorize_outgoing is None or not self.authorize_outgoing(destination):
             raise PermissionError("sip_outbound_not_authorized")
-        if self._active is not None:
+        if self._active is not None or self._dial_pending:
             raise RuntimeError("sip_line_busy")
-        call = await self._ua.dial(destination)
-        self._active = call
-        self._watch_close(call)
+        # Claim the sole call slot BEFORE awaiting the network dial operation.
+        self._dial_pending = True
+        call = None
         try:
-            await call.wait_established()
+            call = await self._ua.dial(destination)
+            self._active = call
+            self._watch_close(call)
+            await asyncio.wait_for(call.wait_established(), timeout=30)
         except Exception:
             self._active = None
-            try:
-                await call.hangup()
-            except Exception:
-                pass
+            if call is not None:
+                try:
+                    await call.hangup()
+                except Exception:
+                    pass
             raise
+        finally:
+            self._dial_pending = False
         identity = SipCallIdentity(
             tenant_id=self.tenant_id,
             call_id="sip-" + uuid4().hex,
@@ -267,6 +274,7 @@ class SipLine:
     async def close(self):
         active = self._active
         self._active = None
+        self._dial_pending = False
         if active is not None:
             try:
                 await active.hangup()
