@@ -81,6 +81,9 @@ def handler_for(ledger: Ledger, *, secret: str):
             try:
                 event = InboundEvent.from_dict(json.loads(payload))
                 outcome = ledger.ingest(event)
+            except OverflowError:
+                self._reply(507, {"error": "inbound_capacity_exceeded"})
+                return
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 status = 409 if isinstance(exc, IdempotencyConflict) else 400
                 self._reply(status, {"error": str(exc)})
