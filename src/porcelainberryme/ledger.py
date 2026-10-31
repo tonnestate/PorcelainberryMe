@@ -1,16 +1,18 @@
-"""SQLite transport ledger with explicit at-most-one automatic send attempt.
+"""Durable inbound/outbound event ledger; no blind retry of ambiguous effects.
 
-ACCEPTED means accepted by the provider, not delivered to the human.
-UNKNOWN means a network timeout could have happened after dispatch; never
-silently retry it. A trusted operator must reconcile ambiguous external effects.
+Exactly-once remote side effects are NOT promised. Inbound claim tokens exclude
+concurrent consumers; after an interrupted dispatch, UNKNOWN requires a human
+or authoritative external receipt before reprocessing.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import secrets
 import sqlite3
 import threading
 
@@ -19,6 +21,12 @@ from .contracts import InboundEvent, OutboundMessage, fingerprint
 
 class IdempotencyConflict(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimedEvent:
+    event: InboundEvent
+    token: str
 
 
 def _now() -> str:
@@ -61,6 +69,14 @@ class Ledger:
                     PRIMARY KEY (tenant_id, idempotency_key)
                 );
             """)
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(inbound)")}
+            # Non-destructive upgrade of v0.1 databases.
+            if "claim_token" not in columns:
+                db.execute("ALTER TABLE inbound ADD COLUMN claim_token TEXT")
+            if "updated_at" not in columns:
+                db.execute("ALTER TABLE inbound ADD COLUMN updated_at TEXT")
+            if "processing_receipt" not in columns:
+                db.execute("ALTER TABLE inbound ADD COLUMN processing_receipt TEXT")
 
     @contextmanager
     def _db(self):
@@ -78,10 +94,10 @@ class Ledger:
         with self._lock, self._db() as db:
             db.execute(
                 "INSERT OR IGNORE INTO inbound "
-                "(tenant_id,channel,external_id,payload,digest,state,created_at) "
-                "VALUES (?,?,?,?,?,'PENDING',?)",
+                "(tenant_id,channel,external_id,payload,digest,state,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,'PENDING',?,?)",
                 (event.tenant_id, event.channel, event.external_id,
-                 json.dumps(payload, ensure_ascii=False), digest, _now()),
+                 json.dumps(payload, ensure_ascii=False), digest, _now(), _now()),
             )
             inserted = db.execute("SELECT changes()").fetchone()[0] == 1
             row = db.execute(
@@ -92,24 +108,104 @@ class Ledger:
                 raise IdempotencyConflict("inbound_id_reused_with_different_payload")
             return {"new": inserted, "state": row["state"]}
 
-    def pending(self, *, limit: int = 50) -> list[InboundEvent]:
+    def pending(self, *, tenant_id: str, limit: int = 50) -> list[InboundEvent]:
+        """Read-only per-tenant projection, NOT a safe processing claim."""
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise ValueError("tenant_scope_required")
         if not 1 <= limit <= 500:
             raise ValueError("invalid_limit")
         with self._lock, self._db() as db:
             rows = db.execute(
-                "SELECT payload FROM inbound WHERE state='PENDING' "
-                "ORDER BY created_at, rowid LIMIT ?", (limit,)
+                "SELECT payload FROM inbound WHERE tenant_id=? AND state='PENDING' "
+                "ORDER BY created_at, rowid LIMIT ?", (tenant_id, limit)
             ).fetchall()
         return [InboundEvent.from_dict(json.loads(row["payload"])) for row in rows]
 
+    def claim_pending(self, *, tenant_id: str, channel: str | None = None) -> ClaimedEvent | None:
+        """Atomically claim one event; safe across processes sharing this database.
+
+        The caller must provide a tenant scope established independently of the
+        message, never from an untrusted request body alone.
+        """
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise ValueError("tenant_scope_required")
+        if channel is not None and channel not in ("email", "whatsapp", "sms", "phone"):
+            raise ValueError("invalid_channel")
+        with self._lock, self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            params: tuple = (tenant_id,)
+            query = "SELECT channel,external_id,payload FROM inbound WHERE tenant_id=? AND state='PENDING'"
+            if channel is not None:
+                query += " AND channel=?"
+                params += (channel,)
+            row = db.execute(query + " ORDER BY created_at, rowid LIMIT 1", params).fetchone()
+            if row is None:
+                return None
+            token = secrets.token_hex(24)
+            updated = db.execute(
+                "UPDATE inbound SET state='PROCESSING',claim_token=?,updated_at=? "
+                "WHERE tenant_id=? AND channel=? AND external_id=? AND state='PENDING'",
+                (token, _now(), tenant_id, row["channel"], row["external_id"]),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("inbound_claim_race")
+            return ClaimedEvent(InboundEvent.from_dict(json.loads(row["payload"])), token)
+
+    def acknowledge_claim(self, claim: ClaimedEvent, *, state: str,
+                          receipt: str | None = None) -> bool:
+        if state not in ("HANDLED", "UNKNOWN"):
+            raise ValueError("invalid_inbound_state")
+        if receipt is not None and (not isinstance(receipt, str) or not 1 <= len(receipt) <= 512):
+            raise ValueError("invalid_processing_receipt")
+        if state == "HANDLED" and not receipt:
+            raise ValueError("handled_receipt_required")
+        event = claim.event
+        with self._lock, self._db() as db:
+            updated = db.execute(
+                "UPDATE inbound SET state=?,processing_receipt=?,updated_at=? "
+                "WHERE tenant_id=? AND channel=? AND external_id=? "
+                "AND state='PROCESSING' AND claim_token=?",
+                (state, receipt, _now(), event.tenant_id, event.channel,
+                 event.external_id, claim.token),
+            )
+            return updated.rowcount == 1
+
+    def recover_interrupted_inbound(self, *, tenant_id: str) -> int:
+        """Operator-controlled startup recovery: uncertain work is NOT resent."""
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise ValueError("tenant_scope_required")
+        with self._lock, self._db() as db:
+            cursor = db.execute(
+                "UPDATE inbound SET state='UNKNOWN',updated_at=? "
+                "WHERE tenant_id=? AND state='PROCESSING'",
+                (_now(), tenant_id),
+            )
+            return cursor.rowcount
+
+    def inbound_status(self, *, tenant_id: str, channel: str, external_id: str) -> dict | None:
+        if not all(isinstance(s, str) and s.strip() for s in (tenant_id, channel, external_id)):
+            raise ValueError("inbound_identity_required")
+        with self._lock, self._db() as db:
+            row = db.execute(
+                "SELECT state,processing_receipt FROM inbound "
+                "WHERE tenant_id=? AND channel=? AND external_id=?",
+                (tenant_id, channel, external_id)
+            ).fetchone()
+            return dict(row) if row else None
+
     def mark_inbound(self, event: InboundEvent, state: str) -> bool:
+        """Legacy supervised acknowledgement, only from PENDING, never claimed work.
+
+        New integrations MUST use claim_pending + acknowledge_claim. This old
+        method stays for v0.1 callers but is not used in production flow.
+        """
         if state not in ("HANDLED", "UNKNOWN"):
             raise ValueError("invalid_inbound_state")
         with self._lock, self._db() as db:
             cursor = db.execute(
-                "UPDATE inbound SET state=? WHERE tenant_id=? AND channel=? "
+                "UPDATE inbound SET state=?,updated_at=? WHERE tenant_id=? AND channel=? "
                 "AND external_id=? AND state='PENDING'",
-                (state, event.tenant_id, event.channel, event.external_id),
+                (state, _now(), event.tenant_id, event.channel, event.external_id),
             )
             return cursor.rowcount == 1
 
@@ -167,7 +263,7 @@ class Ledger:
             return dict(row) if row else None
 
     def recover_interrupted(self) -> int:
-        """Called only at process startup; no automatic retransmission."""
+        """Outbound startup reconciliation only, no automatic retransmission."""
         with self._lock, self._db() as db:
             cursor = db.execute(
                 "UPDATE outbound SET state='UNKNOWN', updated_at=? "
