@@ -26,12 +26,17 @@ Aurora/AVCOS cognition, AnanasMe UI, TonnEstate CRM records or new AI models.
   A caller must inject it into `PythonVoiceBridge` after verifying the
   intended voice and its licensing.
 
-Not yet built: SMS provider transport, SIP/PSTN calls, real-time media,
-mailbox polling, AnanasMe screens and production/tenant-specific integration.
+- **Optional SIP phone line:** real `baresip-python` 0.6.0 registration,
+  authorization-gated incoming/outgoing SIP calls and direct transient PCM audio.
+  No default SIP account, voice model or phone service is installed.
+
+Not yet validated: real PSTN calling, live spoken AI conversations, SMS provider
+transport, automatic mail polling, AnanasMe screens and VPS integration.
 
 ### Development
 
-Python 3.11+; no mandatory third-party runtime dependencies.
+Python 3.11+; no mandatory third-party runtime dependencies. The optional SIP
+extra is pinned and installed only on explicit request using `.[sip]`.
 
     python -m pip install -e .
     python -m unittest discover -s tests -v
@@ -48,9 +53,9 @@ literal body with `sha256=HMAC_SHA256(secret, ascii(unix_timestamp) + "." +
 raw_body)` and supply `X-PB-Timestamp` and `X-PB-Signature`.
 
 Never expose this local endpoint publicly. Existing authoritative connectors
-must first authenticate their upstream provider. A trusted FruitStack worker
-can read `Ledger.pending()` and acknowledge verified outcomes; it does not
-run automatically.
+must first authenticate their upstream provider. A trusted FruitStack worker can claim work via
+`Ledger.claim_pending(tenant_id=...)` and acknowledge an authoritative
+receipt through `Ledger.acknowledge_claim(...)`; it does not run automatically.
 
 ### Architectural constraints
 
@@ -64,5 +69,6 @@ run automatically.
 Technical details: [operator handoff](docs/OPERATIONS.md),
 [architecture](docs/ARCHITECTURE.md),
 [existing integrations](docs/INTEGRATIONS.md),
-[voice recovery](docs/VOICE_RECOVERY.md) and
+[voice recovery](docs/VOICE_RECOVERY.md),
+[optional SIP telephony](docs/SIP_TELEPHONY.md) and
 [donor audit](docs/DONOR_AUDIT.md).
