@@ -9,8 +9,12 @@ Aurora/AVCOS cognition, AnanasMe UI, TonnEstate CRM records or new AI models.
 ### Implemented
 
 - Typed email, WhatsApp, SMS and phone events.
-- Signed loopback HTTP intake, per-tenant/channel ID deduplication and durable
-  SQLite inbound queue.
+- Signed loopback HTTP intake, per-tenant/channel ID deduplication and durable,
+  **capacity-limited** SQLite inbound queue (fails closed at 1,000 retained events by default).
+- Atomically claimed, tenant-scoped inbound processing with a mandatory existing
+  handler/policy, receipt checks and crash-safe UNKNOWN reconciliation.
+- A signed local intake client for existing trusted n8n/WhatsApp integrations.
+- Read-only server capacity and installed-Piper preflight (no model load).
 - Explicitly authorized outbound gateway and provider acceptance/rejection/
   ambiguous failure ledger; ambiguous sends are not silently retried.
 - Optional SMTP sender and basic MIME email normalization.
@@ -57,7 +61,8 @@ run automatically.
 - Provider-accepted does NOT mean human-delivered.
 - No code merge or VPS installation implied by passing offline tests.
 
-Technical details: [architecture](docs/ARCHITECTURE.md),
+Technical details: [operator handoff](docs/OPERATIONS.md),
+[architecture](docs/ARCHITECTURE.md),
 [existing integrations](docs/INTEGRATIONS.md),
 [voice recovery](docs/VOICE_RECOVERY.md) and
 [donor audit](docs/DONOR_AUDIT.md).
