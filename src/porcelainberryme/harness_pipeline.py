@@ -18,7 +18,7 @@ from .ledger import Ledger
 @dataclass(frozen=True, slots=True)
 class ChannelPollResult:
     reviewed: int
-    delivered: int
+    provider_accepted: int
     waiting: int
     blocked: int
     uncertain: int
@@ -64,7 +64,7 @@ class HarnessChannelPipeline:
         """
         if not isinstance(limit, int) or not 1 <= limit <= 500:
             raise ValueError("invalid_poll_limit")
-        reviewed = delivered = waiting = blocked = uncertain = already_recorded = 0
+        reviewed = provider_accepted = waiting = blocked = uncertain = already_recorded = 0
         for event, message_id in self.ledger.owner_harness_admissions(
                 tenant_id=self.tenant_id):
             key = self.dispatcher.return_key(event, message_id)
@@ -85,13 +85,13 @@ class HarnessChannelPipeline:
                 waiting += 1
             elif result.state == "ACCEPTED":
                 # Provider acceptance is not delivery to the recipient.
-                delivered += 1
+                provider_accepted += 1
             elif result.state in ("UNKNOWN", "ATTEMPTING"):
                 uncertain += 1
             else:
                 blocked += 1
         return ChannelPollResult(
-            reviewed=reviewed, delivered=delivered, waiting=waiting,
+            reviewed=reviewed, provider_accepted=provider_accepted, waiting=waiting,
             blocked=blocked, uncertain=uncertain,
             already_recorded=already_recorded,
         )
