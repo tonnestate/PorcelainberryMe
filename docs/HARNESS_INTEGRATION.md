@@ -15,6 +15,7 @@ AnanasMe is the *existing* Aurora/CherryMe/PlumMe harness. PorcelainberryMe owns
 2. An explicit owner verifier and an authoritative existing AnanasMe thread resolver are injected into AnanasMeOwnerHarness. No arbitrary thread creation.
 3. Stable request_id is derived from source tenant, channel and external message ID, not the transient worker token.
 4. InboundProcessor claims one event atomically and stores the assistant message_id as an *admission* receipt, not proof of completion.
+   The owner-harness handler is explicitly marked OWNER_HARNESS in the ledger; a generic CRM receipt is never sufficient.
 5. NativeHarnessReplyDispatcher checks GET /api/messages/{message_id}/result. It sends nothing until an actual DONE reply is observed.
 6. An independently authorized return policy and Gateway delivery ledger control WhatsApp/email/SMS output; duplicates and ambiguous outcomes are not automatically resent.
 7. Phone audio remains with the SIP PCM path. A text reply must not be sent back as an SMS-style phone message; streaming TTS needs separate quality and cancellation verification.
@@ -30,3 +31,42 @@ AnanasMe is the *existing* Aurora/CherryMe/PlumMe harness. PorcelainberryMe owns
 
 Source: https://github.com/tonnestate/AnanasMe/pull/33
 Source: https://github.com/tonnestate/PorcelainberryMe/pull/1
+
+## Supervised restart-safe pipeline (implemented)
+
+`HarnessChannelPipeline` composes the existing `Ledger`, `InboundProcessor`,
+`AnanasMeOwnerHarness`, `NativeHarnessReplyDispatcher` and `Gateway`.
+It creates **no** new agent loop, HTTP server, systemd service or
+background poller. A trusted owner-scoped process invokes:
+
+- `pipeline.ledger.ingest(event)` only for events verified by the existing
+  provider connector, with authoritative tenant identity.
+- `pipeline.admit_next(channel=...)` to claim exactly one event and durably
+  record its owner-harness `message_id` admission, never model completion.
+- `pipeline.deliver_ready(limit=50)` to inspect **only** explicitly
+  OWNER_HARNESS-tagged, durably admitted messages from the selected tenant.
+  It retrieves the exact AnanasMe result, returns pending for unfinished
+  native execution, and authorizes sender/recipient through the existing
+  Gateway before any real delivery attempt.
+
+The pipeline requires the **same** SQLite ledger for admission and return
+delivery, so restart recovery retains the exact source event and native
+message ID. Any different text, recipient, sender or conversation reference
+for the same original event ID fails the stored-payload fingerprint check.
+A forged/unrelated AnanasMe `message_id` within the same thread cannot
+be sent to the caller. Other CRM handlers with generic receipts cannot
+enter this owner-specific return path.
+
+Delivery stats distinguish `provider_accepted` from human delivery.
+Recorded ATTEMPTING/FAILED/UNKNOWN/ACCEPTED outbound states are never
+automatically replayed. A status GET to AnanasMe may be repeated for
+pending execution because it never restarts a mission.
+
+No existing TonnEstate or n8n consumer was switched. The operator must
+disable/redirect the old ingestion path before running this pipeline
+against the same live platform. Only an explicitly accepted staging
+handover may attach a real provider listener and sender.
+
+Tests: cross-process durable claim, exact event+message ID binding,
+spoofed sender/cross-thread rejection, restart recovery, repeated polling
+and exactly one mocked outbound provider acceptance.
