@@ -79,7 +79,7 @@ class PipelineTests(unittest.TestCase):
                           return_value={"state":"DONE","reply":"Die Antwort"}):
             first = restarted.deliver_ready()
             second = restarted.deliver_ready()
-        self.assertEqual(first.delivered, 1)
+        self.assertEqual(first.provider_accepted, 1)
         self.assertEqual(second.already_recorded, 1)
         self.assertEqual(len(self.transport.sent), 1)
         self.assertEqual(self.transport.sent[0].text, "Die Antwort")
