@@ -46,6 +46,8 @@ class LocalSignedIntake:
                     raise RuntimeError("intake_acknowledgement_invalid")
                 return {"new": not reply.get("duplicate", False), "state": reply["state"]}
         except HTTPError as exc:
+            if exc.code == 507:
+                raise OverflowError("inbound_capacity_exceeded") from exc
             if exc.code == 409:
                 raise IdempotencyConflict("inbound_id_reused_with_different_payload") from exc
             if exc.code == 401:
