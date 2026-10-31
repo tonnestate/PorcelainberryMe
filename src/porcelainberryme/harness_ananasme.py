@@ -119,6 +119,51 @@ class AnanasMeOwnerHarness:
             replayed=result.get("replayed") is True,
         )
 
+    def observe_native_reply(self, event: InboundEvent, message_id: str) -> dict:
+        """Read exactly one AnanasMe answer after native Aurora reconciliation.
+
+        Neither a pending state nor an absent/failed result is a deliverable
+        reply. The result's thread must match the approved owner thread.
+        """
+        if not isinstance(event, InboundEvent) or event.kind != "text":
+            raise ValueError("only_text_events_admitted_to_harness")
+        if self._verify_owner(event) is not True:
+            raise PermissionError("not_verified_owner_channel")
+        thread_id = self._resolve_thread(event)
+        if not isinstance(thread_id, str) or not _THREAD.fullmatch(thread_id):
+            raise PermissionError("no_authorized_owner_thread")
+        if not isinstance(message_id, str) or not _MESSAGE.fullmatch(message_id):
+            raise ValueError("invalid_harness_message_id")
+        auth = base64.b64encode(("porcelainberryme:" + self._token).encode("utf-8")).decode("ascii")
+        request = Request(
+            f"http://127.0.0.1:{self._port}/api/messages/{message_id}/result",
+            method="GET", headers={"Authorization": "Basic " + auth},
+        )
+        try:
+            with urlopen(request, timeout=self._timeout) as response:
+                if response.status != 200:
+                    raise RuntimeError("harness_result_unconfirmed")
+                result = json.loads(response.read(32768))
+        except HTTPError as exc:
+            if exc.code in (401, 403):
+                raise PermissionError("harness_auth_rejected") from exc
+            raise RuntimeError("harness_result_unconfirmed") from exc
+        if (not isinstance(result, dict)
+                or result.get("schema") != "ananasme.assistant-result.v1"
+                or result.get("thread_id") != thread_id
+                or result.get("message_id") != message_id):
+            raise RuntimeError("harness_result_identity_mismatch")
+        state = result.get("state")
+        if state not in ("QUEUED", "WORKING", "DONE", "HANDED_OFF",
+                         "REVIEW_UNVERIFIED", "UNKNOWN", "FAILED"):
+            raise RuntimeError("harness_state_unrecognized")
+        text = result.get("reply")
+        if state == "DONE" and result.get("deliverable") is True:
+            if not isinstance(text, str) or not text.strip() or len(text) > 16000:
+                raise RuntimeError("harness_final_reply_invalid")
+            return {"state": "DONE", "reply": text}
+        return {"state": state, "reply": None}
+
     def receipt_handler(self, event: InboundEvent, claim_token: str) -> str:
         """Plug into InboundProcessor.handler after its own owner authorization.
 
