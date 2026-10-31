@@ -191,16 +191,22 @@ class SipLine:
             local_address=self.credentials.user + "@" + self.credentials.domain,
             direction="incoming",
         )
-        event = InboundEvent(
-            tenant_id=identity.tenant_id,
-            channel="phone",
-            external_id=identity.call_id,
-            sender=identity.peer,
-            recipient=identity.local_address,
-            text="",
-            kind="call_started",
-        )
-        if self._active is not None or not self.authorize_incoming(event):
+        # Never answer or leave a ringing call hanging if malformed SIP input
+        # or the existing authorization policy raises an exception.
+        try:
+            event = InboundEvent(
+                tenant_id=identity.tenant_id,
+                channel="phone",
+                external_id=identity.call_id,
+                sender=identity.peer,
+                recipient=identity.local_address,
+                text="",
+                kind="call_started",
+            )
+            allowed = self._active is None and self.authorize_incoming(event) is True
+        except Exception:
+            allowed = False
+        if not allowed:
             await call.hangup()
             return None
         self._active = call
