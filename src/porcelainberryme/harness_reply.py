@@ -51,6 +51,10 @@ class NativeHarnessReplyDispatcher:
             raise ValueError("phone_reply_requires_sip_audio")
         if self.authorize_return(event) is not True:
             raise PermissionError("return_channel_not_authorized")
+        # Proof of the ORIGINAL signed, stored owner event and the precise
+        # native admission receipt. An unrelated answer in the same thread
+        # must never be used to impersonate a reply to this sender.
+        self.gateway.ledger.assert_harness_admission(event, message_id)
         observed = self.harness.observe_native_reply(event, message_id)
         if observed["state"] != "DONE":
             return ReplyDispatchResult("AWAITING_NATIVE_RESULT")
