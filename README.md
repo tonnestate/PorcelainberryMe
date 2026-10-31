@@ -32,6 +32,13 @@ Aurora/AVCOS cognition, AnanasMe UI, TonnEstate CRM records or new AI models.
   A caller must inject it into `PythonVoiceBridge` after verifying the
   intended voice and its licensing.
 
+- **Python/PyPI voice streaming to SIP:** explicit installed-engine PCM16LE
+  source or existing Python WAV bridge, paced small frames, cancellable
+  playback and single-inference protection for legacy synchronous voices.
+- **Native SIP harness speech:** an authorized, already-transcribed phone turn
+  is tied to the original SIP session and the exact durable AnanasMe assistant
+  receipt. Only confirmed native DONE answers can be played; ambiguous or
+  interrupted attempts are not repeated automatically.
 - **Optional SIP phone line:** real `baresip-python` 0.6.0 registration,
   authorization-gated incoming/outgoing SIP calls and direct transient PCM audio.
   No default SIP account, voice model or phone service is installed.
@@ -78,5 +85,6 @@ Technical details: [operator handoff](docs/OPERATIONS.md),
 [voice recovery](docs/VOICE_RECOVERY.md),
 [prior PyPI voice investigation](docs/PYPI_VOICE_RECOVERY.md),
 [native AnanasMe harness link](docs/HARNESS_INTEGRATION.md),
-[optional SIP telephony](docs/SIP_TELEPHONY.md) and
+[optional SIP telephony](docs/SIP_TELEPHONY.md),
+[voice-to-harness integration](docs/VOICE_TO_HARNESS.md) and
 [donor audit](docs/DONOR_AUDIT.md).
