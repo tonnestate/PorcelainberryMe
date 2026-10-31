@@ -30,19 +30,19 @@ pleasant-sounding sample and exact voice profile have been verified.
 
 ## Signed local ingress
 
-The \`LocalSignedIntake\` helper posts canonical events to the loopback-only
-\`/v1/inbound\` endpoint. It is for **existing authenticated and approved**
+The `LocalSignedIntake` helper posts canonical events to the loopback-only
+`/v1/inbound` endpoint. It is for **existing authenticated and approved**
 TonnEstate/n8n integrations. The inbound server has no public provider webhook
 and no AI handler; writing into the queue never triggers an agent.
 
 Existing TonnEstate WhatsApp remains the sole production consumer. A future
 supervised handover must ensure the existing consumer is disabled, redirected
-or intentionally replaced before calling \`InboundProcessor.run_once()\`.
+or intentionally replaced before calling `InboundProcessor.run_once()`.
 
 ## Tenant-scoped processing
 
-An owning application injects an explicit \`authorize\` callback and an
-authoritative \`handler(event, claim_token) -> persisted_receipt\`. These are
+An owning application injects an explicit `authorize` callback and an
+authoritative `handler(event, claim_token) -> persisted_receipt`. These are
 mandatory; there is no default LLM/agent handler. A verified claim is
 transactionally exclusive across SQLite processes, not just threads.
 
@@ -50,10 +50,10 @@ transactionally exclusive across SQLite processes, not just threads.
 - On permission denial, uncertain delivery or handler exception, the event is
   UNKNOWN and **not retried automatically**.
 - An unexpected process death leaves PROCESSING until the operator runs
-  \`recover_interrupted_inbound(tenant_id=...)\`, marking it UNKNOWN for
+  `recover_interrupted_inbound(tenant_id=...)`, marking it UNKNOWN for
   reconciliation rather than repeating a possible side effect.
-- Only tenant-scoped \`pending(tenant_id=...)\` and
-  \`claim_pending(tenant_id=...)\` are available in the supported path.
+- Only tenant-scoped `pending(tenant_id=...)` and
+  `claim_pending(tenant_id=...)` are available in the supported path.
 - The existing source event ID must be stable across retries. Content changes
   under the same ID are rejected, not silently overwritten.
 - No external processing can be called "exactly once" merely because SQLite
@@ -62,9 +62,9 @@ transactionally exclusive across SQLite processes, not just threads.
 ## Bounded disk behavior
 
 Default inbound capacity is **1,000 retained events across the database**;
-the \`Ledger\` constructor accepts a bounded override. At capacity,
+the `Ledger` constructor accepts a bounded override. At capacity,
 new event IDs fail with HTTP 507 and the signed client raises
-\`inbound_capacity_exceeded\`. Duplicates of previously ingested IDs are still
+`inbound_capacity_exceeded`. Duplicates of previously ingested IDs are still
 acknowledged. The system does not automatically delete or erase personal data;
 the eventual retention process needs an approved policy and audit.
 
