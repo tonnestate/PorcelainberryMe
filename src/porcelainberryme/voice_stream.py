@@ -73,10 +73,29 @@ class ExistingPythonWavVoice:
         if not isinstance(voice, PythonVoiceBridge) or not voice.ready:
             raise VoiceUnavailable("PYTHON_VOICE_NOT_BOUND")
         self.voice = voice
+        self._inference: asyncio.Task | None = None
+
+    def _clear_inference(self, task: asyncio.Task) -> None:
+        # Consume failures from a thread that finishes after caller barge-in.
+        # It is essential not to start a second expensive TTS while the first
+        # thread is still using the existing installed engine/model.
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
+        if self._inference is task:
+            self._inference = None
 
     async def frames(self, text: str, spec: PcmSpec) -> AsyncIterator[bytes]:
         validated_text(text)
-        result = await asyncio.to_thread(self.voice.speak, text)
+        if self._inference is not None:
+            raise VoiceUnavailable("PYTHON_VOICE_INFERENCE_BUSY")
+        task = asyncio.create_task(asyncio.to_thread(self.voice.speak, text))
+        self._inference = task
+        task.add_done_callback(self._clear_inference)
+        # Preserve the synchronous worker after playback cancellation, so
+        # all subsequent turns fail closed until that worker has finished.
+        result = await asyncio.shield(task)
         if result.mime_type != "audio/wav":
             raise VoiceUnavailable("VOICE_WAV_REQUIRED")
         try:
