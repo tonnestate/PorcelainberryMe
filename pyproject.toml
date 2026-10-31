@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "porcelainberryme"
+version = "0.1.0"
+description = "Lightweight provider-neutral communication gateway for FruitStack"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Proprietary - all rights reserved"}
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+porcelainberryme = "porcelainberryme.server:main"
