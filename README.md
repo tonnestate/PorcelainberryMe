@@ -1,46 +1,63 @@
 # PorcelainberryMe
 
-A lightweight, Python-first communication fabric for FruitStack. It unifies transport **without** replacing Aurora, CherryMe, PlumMe, AVCOS, AnanasMe or TonnEstate.
+Lightweight, Python-first communications infrastructure for FruitStack. The
+library owns transport contracts, signed events and delivery receipts; **not**
+Aurora/AVCOS cognition, AnanasMe UI, TonnEstate CRM records or new AI models.
 
-**Status: v0.1 implementation / offline verification pending. No VPS deployment.**
+**Status:** feature-branch prototype. Offline tests only; not deployed on VPS.
 
-## Initial capabilities
+### Implemented
 
-- Typed inbound events for email, WhatsApp, SMS and phone.
-- Signed, loopback-only HTTP intake from existing trusted webhooks/bridges.
-- Durable SQLite event queue with per-tenant/channel/external-ID deduplication.
-- Authorized outbound dispatch with a durable at-most-one automatic attempt, clear provider-accepted / failed / unknown states, and no blind retries.
-- Optional standard-library SMTP outbound, MIME email intake and official WhatsApp Business Cloud API text sender.
-- No SMS carrier, SIP trunk, call media bridge, mailbox poller, or provider secrets bundled.
-- A Python speech hook with **no default engine**. Reconnect the earlier approved voice component only after its source and audio have been identified.
+- Typed email, WhatsApp, SMS and phone events.
+- Signed loopback HTTP intake, per-tenant/channel ID deduplication and durable
+  SQLite inbound queue.
+- Explicitly authorized outbound gateway and provider acceptance/rejection/
+  ambiguous failure ledger; ambiguous sends are not silently retried.
+- Optional SMTP sender and basic MIME email normalization.
+- Official WhatsApp Business Cloud text adapter (opt-in).
+- **Existing TonnEstate/Aurora WhatsApp adapter:** delegates through the
+  owner-scoped `127.0.0.1:5001/api/internal/v1/aurora/send` API; no new WhatsApp process.
+- **Existing Piper voice adapter:** uses explicit local executable and ONNX
+  file + config already present on disk; no model download or bundled voice.
+  A caller must inject it into `PythonVoiceBridge` after verifying the
+  intended voice and its licensing.
 
-## Principles
+Not yet built: SMS provider transport, SIP/PSTN calls, real-time media,
+mailbox polling, AnanasMe screens and production/tenant-specific integration.
 
-Transport is not cognition. No duplicated FruitStack agent loop, no persistent local voice model, no autonomous outbound messaging, no duplicate CRM ownership, and no unverified provider switch. Reuse existing TonnEstate communication/consent APIs, mail desk, WhatsApp bridge and AnanasMe presentation.
+### Development
 
-No external action happens just by installing the package. Sending requires an injected authorization decision and a configured transport. Inbound HTTP never runs an agent.
-
-## Offline test
+Python 3.11+; no mandatory third-party runtime dependencies.
 
     python -m pip install -e .
     python -m unittest discover -s tests -v
 
-The package uses Python 3.11+ and has no required third-party runtime dependencies.
+The standalone server is **optional** and inbound-only. It listens exclusively
+on loopback, refuses unsigned events and never invokes an agent itself.
 
-## Optional signed inbound bridge
-
-The listening service is loopback-only. Configure a strong random secret and an absolute local database file path (private deployment configuration, never commit credentials):
-
-    PORCELAINBERRY_SIGNING_SECRET=<private 32+ character value>
-    PORCELAINBERRY_DB=/var/lib/porcelainberryme/events.sqlite3
+    PORCELAINBERRY_SIGNING_SECRET=<private secret of at least 32 chars>
+    PORCELAINBERRY_DB=/private/absolute/path/events.sqlite3
     porcelainberryme
 
-POST to http://127.0.0.1:8873/v1/inbound with JSON fields matching InboundEvent. Supply header X-PB-Timestamp (Unix seconds) and X-PB-Signature computed as sha256=HMAC_SHA256(secret, ascii(timestamp) + "." + raw_json_bytes). Timestamps outside five minutes are refused; external event IDs are idempotent. Use a trusted reverse proxy or existing internal bridge for upstream webhook verification; never expose the loopback listener directly to the internet.
+POST a canonical InboundEvent JSON to 127.0.0.1:8873/v1/inbound. Sign the
+literal body with `sha256=HMAC_SHA256(secret, ascii(unix_timestamp) + "." +
+raw_body)` and supply `X-PB-Timestamp` and `X-PB-Signature`.
 
-The stored inbound events can be read via Ledger.pending(); the approved FruitStack integration is responsible for real processing and Ledger.mark_inbound(). No automatic AI inference is triggered.
+Never expose this local endpoint publicly. Existing authoritative connectors
+must first authenticate their upstream provider. A trusted FruitStack worker
+can read `Ledger.pending()` and acknowledge verified outcomes; it does not
+run automatically.
 
-## Current evidence boundary
+### Architectural constraints
 
-Only code and source-level tests are being developed. Phone conversations, delivery to external recipients, SMTP authentication, WhatsApp API credentials, VPS capacity and voice quality are **not** verified. Accepted by a provider is not equivalent to delivered to the recipient.
+- No provider credentials, private caller data or voice samples in Git.
+- No new local voice-model weights and no duplicate FruitStack agent brain.
+- No additional WhatsApp login, no parallel TonnEstate message consumer.
+- External sending always requires an injected authorization policy.
+- Provider-accepted does NOT mean human-delivered.
+- No code merge or VPS installation implied by passing offline tests.
 
-See docs/ARCHITECTURE.md, docs/DONOR_AUDIT.md and docs/VOICE_RECOVERY.md.
+Technical details: [architecture](docs/ARCHITECTURE.md),
+[existing integrations](docs/INTEGRATIONS.md),
+[voice recovery](docs/VOICE_RECOVERY.md) and
+[donor audit](docs/DONOR_AUDIT.md).
