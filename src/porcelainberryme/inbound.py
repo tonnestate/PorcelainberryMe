@@ -25,11 +25,15 @@ class InboundProcessor:
 
     def __init__(self, ledger: Ledger, *, tenant_id: str,
                  handler: Callable[[InboundEvent, str], str],
-                 authorize: Callable[[InboundEvent], bool]):
+                 authorize: Callable[[InboundEvent], bool],
+                 handler_kind: str = "OTHER"):
         if not isinstance(tenant_id, str) or not tenant_id.strip():
             raise ValueError("tenant_scope_required")
         if not callable(handler) or not callable(authorize):
             raise ValueError("explicit_handler_and_policy_required")
+        if handler_kind not in ("OTHER", "OWNER_HARNESS"):
+            raise ValueError("invalid_handler_kind")
+        self.handler_kind = handler_kind
         self.ledger = ledger
         self.tenant_id = tenant_id
         self._handler = handler
@@ -52,6 +56,8 @@ class InboundProcessor:
         except Exception:
             # Failure might follow a completed remote effect. Do not retry.
             receipt = None
-        if not self.ledger.acknowledge_claim(claim, state=status, receipt=receipt):
+        if not self.ledger.acknowledge_claim(
+                claim, state=status, receipt=receipt,
+                handler_kind=self.handler_kind):
             raise RuntimeError("claim_ownership_lost")
         return InboundProcessingResult(status, claim.event.external_id, receipt)
