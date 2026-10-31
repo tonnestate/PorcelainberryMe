@@ -38,7 +38,7 @@ class Gateway:
         if transport is None:
             raise ValueError("channel_transport_not_configured")
         reservation = self.ledger.reserve(message)
-        if not reservation["new"]:
+        if reservation["state"] != "PENDING":
             return DeliveryResult(reservation["state"], reservation["provider_receipt"])
         if not self.ledger.claim(message):
             current = self.ledger.outbound_status(message.tenant_id, message.idempotency_key)
