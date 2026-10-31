@@ -11,11 +11,11 @@ from porcelainberryme.ledger import Ledger
 from porcelainberryme.service import Gateway
 
 
-def event(channel="whatsapp", sender="verified-owner"):
+def event(channel="whatsapp", sender="verified-owner", text="Bitte antworte", external_id="external-1"):
     return InboundEvent(
         tenant_id="owner-tenant", channel=channel,
-        external_id="external-1", sender=sender,
-        recipient="owner-identity", text="Bitte antworte",
+        external_id=external_id, sender=sender,
+        recipient="owner-identity", text=text,
     )
 
 
@@ -53,6 +53,14 @@ class ReplyTests(unittest.TestCase):
             transports={c: self.transport for c in ("email","whatsapp","sms")},
             authorize=lambda m: m.tenant_id == "owner-tenant",
         )
+        # Simulate the REAL, durable AnanasMe admission for each source
+        # event before allowing any reply to leave its original channel.
+        for channel in ("email", "whatsapp", "sms"):
+            self.gateway.ledger.ingest(event(channel))
+            claimed = self.gateway.ledger.claim_pending(
+                tenant_id="owner-tenant", channel=channel)
+            self.assertTrue(self.gateway.ledger.acknowledge_claim(
+                claimed, state="HANDLED", receipt=self.mid))
         self.dispatcher = NativeHarnessReplyDispatcher(
             harness=self.harness, gateway=self.gateway,
             channel_sender=lambda e: "owner-identity",
@@ -115,6 +123,34 @@ class ReplyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,"final_reply_invalid"):
                 self.dispatcher.dispatch(event(),self.mid)
         self.assertEqual(self.transport.messages,[])
+
+    def test_same_thread_unrelated_assistant_cannot_be_resent(self):
+        with patch("porcelainberryme.harness_ananasme.urlopen") as network:
+            with self.assertRaisesRegex(PermissionError, "not_bound_to_inbound_event"):
+                self.dispatcher.dispatch(event(), "c" * 32)
+            network.assert_not_called()
+        self.assertEqual(self.transport.messages, [])
+
+    def test_identical_source_id_with_modified_payload_cannot_redirect_reply(self):
+        with patch("porcelainberryme.harness_ananasme.urlopen") as network:
+            with self.assertRaisesRegex(PermissionError, "not_bound_to_inbound_event"):
+                self.dispatcher.dispatch(event(text="Neuer Auftrag"), self.mid)
+            with self.assertRaisesRegex(PermissionError, "not_bound_to_inbound_event"):
+                self.dispatcher.dispatch(event(external_id="other-id"), self.mid)
+            network.assert_not_called()
+        self.assertEqual(self.transport.messages, [])
+
+    def test_processing_without_native_admission_is_not_deliverable(self):
+        received = event()
+        with self.gateway.ledger._db() as db:
+            db.execute(
+                "UPDATE inbound SET state='UNKNOWN',processing_receipt=NULL "
+                "WHERE tenant_id=? AND channel=? AND external_id=?",
+                (received.tenant_id, received.channel, received.external_id))
+        with patch("porcelainberryme.harness_ananasme.urlopen") as network:
+            with self.assertRaisesRegex(PermissionError, "not_bound_to_inbound_event"):
+                self.dispatcher.dispatch(received, self.mid)
+            network.assert_not_called()
 
     def test_phone_audio_not_dispatched_as_sms(self):
         with self.assertRaisesRegex(ValueError,"phone_reply_requires_sip_audio"):
