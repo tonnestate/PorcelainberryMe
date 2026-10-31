@@ -60,7 +60,8 @@ class ReplyTests(unittest.TestCase):
             claimed = self.gateway.ledger.claim_pending(
                 tenant_id="owner-tenant", channel=channel)
             self.assertTrue(self.gateway.ledger.acknowledge_claim(
-                claimed, state="HANDLED", receipt=self.mid))
+                claimed, state="HANDLED", receipt=self.mid,
+                handler_kind="OWNER_HARNESS"))
         self.dispatcher = NativeHarnessReplyDispatcher(
             harness=self.harness, gateway=self.gateway,
             channel_sender=lambda e: "owner-identity",
