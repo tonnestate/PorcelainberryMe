@@ -22,9 +22,9 @@ No donor source code was copied into v0.1. All transport core code was authored 
 
 1. Existing trusted bridge verifies the platform-specific webhook.
 2. It posts a canonical InboundEvent to loopback, signed and time-bounded.
-3. The event is durably stored and deduplicated by (tenant, channel, external_id). Same ID with different content returns a conflict.
-4. A trusted integration drains pending events and invokes the *existing* FruitStack/CRM route. PorcelainberryMe never chooses a cognitive agent.
-5. The trusted integration acknowledges handling only after its authoritative outcome is recorded.
+3. The event is durably stored and deduplicated by (tenant, channel, external_id); storage is bounded and returns HTTP 507 instead of filling the host. Same ID with changed content conflicts.
+4. An explicitly scoped and authorized existing integration uses an atomic claim (PENDING -> PROCESSING) across SQLite processes; a second consumer cannot claim it.
+5. The existing authoritative FruitStack/CRM handler returns a persisted receipt to acknowledge HANDLED. On an ambiguous side effect or crash, UNKNOWN requires reconciliation and is never automatically replayed.
 6. Outbound sends require a separate explicit authorizer callback. The delivery ledger records PENDING -> ATTEMPTING -> ACCEPTED / FAILED / UNKNOWN. UNKNOWN is never automatically retried.
 
 Provider acceptance is not end-user delivery. Inbound and outbound exact-once externally are NOT claimed.
@@ -47,6 +47,8 @@ Provider acceptance is not end-user delivery. Inbound and outbound exact-once ex
 - No blind installation of model weights or TTS engine.
 - No provider-specific webhook publicly exposed.
 - No VPS install, live call or production readiness claim.
+- Read-only capacity and voice file preflight is available with `python -m porcelainberryme.preflight`.
+- No live inbound connector was switched; TonnEstate remains the sole current WhatsApp consumer.
 
 ## Acceptance
 
