@@ -100,6 +100,7 @@ class HarnessTests(unittest.TestCase):
                 ledger, tenant_id="owner-tenant",
                 authorize=self.verified,
                 handler=self.adapter.receipt_handler,
+                handler_kind="OWNER_HARNESS",
             )
             reply = FakeResponse({"message_id": "c"*32, "state": "QUEUED", "replayed": False})
             with patch("porcelainberryme.harness_ananasme.urlopen", return_value=reply) as send:
