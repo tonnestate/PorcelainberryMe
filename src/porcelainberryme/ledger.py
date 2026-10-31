@@ -80,6 +80,8 @@ class Ledger:
                 db.execute("ALTER TABLE inbound ADD COLUMN updated_at TEXT")
             if "processing_receipt" not in columns:
                 db.execute("ALTER TABLE inbound ADD COLUMN processing_receipt TEXT")
+            if "handler_kind" not in columns:
+                db.execute("ALTER TABLE inbound ADD COLUMN handler_kind TEXT")
 
     @contextmanager
     def _db(self):
@@ -165,9 +167,12 @@ class Ledger:
             return ClaimedEvent(InboundEvent.from_dict(json.loads(row["payload"])), token)
 
     def acknowledge_claim(self, claim: ClaimedEvent, *, state: str,
-                          receipt: str | None = None) -> bool:
+                          receipt: str | None = None,
+                          handler_kind: str = "OTHER") -> bool:
         if state not in ("HANDLED", "UNKNOWN"):
             raise ValueError("invalid_inbound_state")
+        if handler_kind not in ("OTHER", "OWNER_HARNESS"):
+            raise ValueError("invalid_inbound_handler_kind")
         if receipt is not None and (not isinstance(receipt, str) or not 1 <= len(receipt) <= 512):
             raise ValueError("invalid_processing_receipt")
         if state == "HANDLED" and not receipt:
@@ -175,10 +180,11 @@ class Ledger:
         event = claim.event
         with self._lock, self._db() as db:
             updated = db.execute(
-                "UPDATE inbound SET state=?,processing_receipt=?,updated_at=? "
+                "UPDATE inbound SET state=?,processing_receipt=?,handler_kind=?,updated_at=? "
                 "WHERE tenant_id=? AND channel=? AND external_id=? "
                 "AND state='PROCESSING' AND claim_token=?",
-                (state, receipt, _now(), event.tenant_id, event.channel,
+                (state, receipt, handler_kind if state == "HANDLED" else None,
+                 _now(), event.tenant_id, event.channel,
                  event.external_id, claim.token),
             )
             return updated.rowcount == 1
@@ -219,14 +225,40 @@ class Ledger:
             raise ValueError("invalid_harness_message_id")
         with self._lock, self._db() as db:
             row = db.execute(
-                "SELECT state,digest,processing_receipt FROM inbound "
+                "SELECT state,digest,processing_receipt,handler_kind FROM inbound "
                 "WHERE tenant_id=? AND channel=? AND external_id=?",
                 (event.tenant_id, event.channel, event.external_id),
             ).fetchone()
-        if (row is None or row["state"] != "HANDLED"
+        if (row is None or row["state"] != "HANDLED" or row["handler_kind"] != "OWNER_HARNESS"
                 or row["digest"] != fingerprint(event.to_dict())
                 or row["processing_receipt"] != message_id):
             raise PermissionError("harness_message_not_bound_to_inbound_event")
+
+    def owner_harness_admissions(self, *, tenant_id: str) -> list[tuple[InboundEvent, str]]:
+        """Bounded, tenant-scoped recovery of verified owner harness admissions.
+
+        Only events explicitly acknowledged by an owner-harness consumer may
+        be considered for delivery; never infer the handler from a random
+        receipt shape or an external sender string.
+        """
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise ValueError("tenant_scope_required")
+        with self._lock, self._db() as db:
+            rows = db.execute(
+                "SELECT payload,processing_receipt FROM inbound "
+                "WHERE tenant_id=? AND state='HANDLED' "
+                "AND handler_kind='OWNER_HARNESS' "
+                "AND channel IN ('whatsapp','email','sms') "
+                "ORDER BY created_at,rowid LIMIT ?",
+                (tenant_id, self.max_inbound_rows),
+            ).fetchall()
+        result: list[tuple[InboundEvent, str]] = []
+        for row in rows:
+            admission = row["processing_receipt"]
+            if (isinstance(admission, str) and len(admission) == 32
+                    and all(char in "0123456789abcdef" for char in admission)):
+                result.append((InboundEvent.from_dict(json.loads(row["payload"])), admission))
+        return result
 
     def mark_inbound(self, event: InboundEvent, state: str) -> bool:
         """Legacy supervised acknowledgement, only from PENDING, never claimed work.
