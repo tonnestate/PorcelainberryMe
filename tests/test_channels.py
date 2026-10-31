@@ -64,7 +64,7 @@ class HttpIngressTests(unittest.TestCase):
         self.assertEqual(status, 409)
         status, _ = self._post(item, good_signature=False)
         self.assertEqual(status, 401)
-        self.assertEqual(len(self.ledger.pending()), 1)
+        self.assertEqual(len(self.ledger.pending(tenant_id="tenant")), 1)
 
 
 class WhatsAppSenderTests(unittest.TestCase):
