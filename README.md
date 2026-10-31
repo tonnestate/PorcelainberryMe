@@ -23,6 +23,12 @@ Aurora/AVCOS cognition, AnanasMe UI, TonnEstate CRM records or new AI models.
   owner-scoped `127.0.0.1:5001/api/internal/v1/aurora/send` API; no new WhatsApp process.
 - **Existing Piper voice adapter:** uses explicit local executable and ONNX
   file + config already present on disk; no model download or bundled voice.
+- **AnanasMe native harness integration:** verified owner-originated messages
+  from all four channels are submitted through the existing persistent
+  AnanasMe request_id and Aurora/CherryMe routing; no second cognition.
+- **Native reply gate:** WhatsApp/email/SMS returns are permitted only after
+  the exact AnanasMe assistant message reports DONE, then pass the existing
+  authorized Gateway/idempotency ledger; phone speech uses SIP separately.
   A caller must inject it into `PythonVoiceBridge` after verifying the
   intended voice and its licensing.
 
@@ -70,5 +76,7 @@ Technical details: [operator handoff](docs/OPERATIONS.md),
 [architecture](docs/ARCHITECTURE.md),
 [existing integrations](docs/INTEGRATIONS.md),
 [voice recovery](docs/VOICE_RECOVERY.md),
+[prior PyPI voice investigation](docs/PYPI_VOICE_RECOVERY.md),
+[native AnanasMe harness link](docs/HARNESS_INTEGRATION.md),
 [optional SIP telephony](docs/SIP_TELEPHONY.md) and
 [donor audit](docs/DONOR_AUDIT.md).
