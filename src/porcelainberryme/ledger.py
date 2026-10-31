@@ -206,6 +206,28 @@ class Ledger:
             ).fetchone()
             return dict(row) if row else None
 
+    def assert_harness_admission(self, event: InboundEvent, message_id: str) -> None:
+        """Require exact ingested payload and its recorded native admission ID.
+
+        A provider's source ID alone is not sufficient authorization:
+        the same sender/channel with a changed text, recipient, or reference
+        must not be allowed to fetch and send an unrelated owner answer.
+        """
+        if not isinstance(event, InboundEvent):
+            raise ValueError("invalid_inbound_event")
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError("invalid_harness_message_id")
+        with self._lock, self._db() as db:
+            row = db.execute(
+                "SELECT state,digest,processing_receipt FROM inbound "
+                "WHERE tenant_id=? AND channel=? AND external_id=?",
+                (event.tenant_id, event.channel, event.external_id),
+            ).fetchone()
+        if (row is None or row["state"] != "HANDLED"
+                or row["digest"] != fingerprint(event.to_dict())
+                or row["processing_receipt"] != message_id):
+            raise PermissionError("harness_message_not_bound_to_inbound_event")
+
     def mark_inbound(self, event: InboundEvent, state: str) -> bool:
         """Legacy supervised acknowledgement, only from PENDING, never claimed work.
 
