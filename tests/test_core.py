@@ -50,7 +50,7 @@ class LedgerTests(unittest.TestCase):
         self.assertTrue(self.ledger.ingest(inbound(channel="sms"))["new"])
         with self.assertRaises(IdempotencyConflict):
             self.ledger.ingest(inbound(text="changed"))
-        self.assertEqual(len(self.ledger.pending()), 3)
+        self.assertEqual(len(self.ledger.pending(tenant_id="tenant-a")), 3)
         self.assertTrue(self.ledger.mark_inbound(inbound(), "HANDLED"))
         self.assertFalse(self.ledger.mark_inbound(inbound(), "HANDLED"))
 
