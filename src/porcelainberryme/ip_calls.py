@@ -308,6 +308,10 @@ class CallRegistry:
             con.execute("DELETE FROM ip_call_events WHERE created_at<?",
                         (now - EVENT_RETENTION_SECONDS,))
             self._prune_closed_calls(con, now)
+            # Persist data-retention maintenance independently of the
+            # subsequent API action. A 404/403 must not roll it back.
+            con.commit()
+            con.execute("BEGIN IMMEDIATE")
             return con
         except BaseException:
             con.rollback()
