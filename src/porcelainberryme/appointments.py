@@ -18,6 +18,8 @@ import time
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .agent_knowledge import DEFAULT_GREETING
+
 ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 REQUEST = re.compile(r"^[A-Za-z0-9_.:-]{8,128}$")
 LOCAL = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$")
@@ -382,6 +384,7 @@ class AppointmentVoiceResponder:
         )
         self.store.validate_calendar(tenant, assistant)
         self.fallback = fallback
+        self.greeting = getattr(fallback, "greeting", DEFAULT_GREETING)
         self._clock = clock or time.time
         self._pending: tuple[str, str, int] | None = None
 
