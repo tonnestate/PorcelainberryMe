@@ -74,6 +74,45 @@ test('browser push requires explicit subscription and registers only this device
   assert.deepEqual(saved, ['unsubscribed']);
 });
 
+test('push subscribe starts synchronously without awaited permission preflight', async () => {
+  let subscribeCalled = false;
+  let getSubscriptionCalled = false;
+  const registration = {
+    pushManager: {
+      async getSubscription() {
+        getSubscriptionCalled = true;
+        return null;
+      },
+      subscribe() {
+        subscribeCalled = true;
+        return Promise.resolve({
+          endpoint,
+          toJSON: () => ({
+            endpoint, keys: {
+              p256dh: key, auth: Buffer.alloc(16, 7).toString('base64url'),
+            },
+          }),
+        });
+      },
+    },
+  };
+  const client = new IPCallClient({
+    apiBase: 'https://calls.example.test',
+    identityToken: 'verified-tenant-human',
+    fetchImpl: async () => ({
+      ok: true, json: async () => ({ enabled: true }),
+    }),
+  });
+  const pending = client.enableCallPush({
+    registration, vapidPublicKey: key,
+  });
+  assert.equal(subscribeCalled, true,
+    'pushManager.subscribe must be invoked before first await');
+  assert.equal(getSubscriptionCalled, false);
+  const result = await pending;
+  assert.equal(result.enabled, true);
+});
+
 test('browser push rejects malformed keys and unsupported secure context', async () => {
   assert.throws(() => decodeVapidKey('garbage'), /invalid_vapid_public_key/);
   assert.equal(decodeVapidKey(key).length, 65);

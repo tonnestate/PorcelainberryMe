@@ -95,13 +95,15 @@ export class IPCallClient {
         || typeof registration.pushManager.subscribe !== 'function') {
       throw new Error('push_service_worker_required');
     }
-    // Avoid an await/network request before prompting; user activation can
-    // be lost if a client fetches configuration inside this callback.
-    const subscription = await registration.pushManager.getSubscription()
-      || await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: decodeVapidKey(vapidPublicKey),
-      });
+    // IMPORTANT: subscription must be initiated synchronously within the
+    // click handler. Awaiting getSubscription() first can lose transient
+    // user activation on iOS/WebKit. subscribe() returns the existing
+    // subscription when the application-server key is unchanged.
+    const request = registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: decodeVapidKey(vapidPublicKey),
+    });
+    const subscription = await request;
     const wire = subscription.toJSON();
     if (!wire?.endpoint || !wire.keys?.p256dh || !wire.keys?.auth) {
       throw new Error('invalid_browser_push_subscription');
