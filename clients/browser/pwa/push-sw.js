@@ -21,7 +21,7 @@ self.addEventListener('push', event => {
     return;
   }
   const isHandoff = kind === 'HANDOFF_OFFERED';
-  const target = new URL('/', self.registration.scope);
+  const target = new URL('./', self.registration.scope);
   target.searchParams.set('incoming_call', id);
   const options = {
     body: isHandoff
@@ -43,7 +43,7 @@ self.addEventListener('notificationclick', event => {
   const info = event.notification?.data;
   const callId = info?.callId;
   if (typeof callId !== 'string' || !/^[0-9a-f]{32}$/.test(callId)) return;
-  const target = new URL('/', self.registration.scope);
+  const target = new URL('./', self.registration.scope);
   target.searchParams.set('incoming_call', callId);
   event.waitUntil((async () => {
     // Reuse the already running first-party PWA where available. The host
