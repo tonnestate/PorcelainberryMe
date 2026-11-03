@@ -24,7 +24,7 @@ Sources:
 | Business website/docs knowledge | Website content, self-learning knowledge and approvals | NEW: local approved text/Markdown document paragraphs plus exact FAQ, revision-specific approval and source title; no website crawling, PDF parser or semantic RAG | Automatic ingestion, multilingual semantic retrieval, evidence evaluation and review UI |
 | Conditional call opening | Yes | NEW: per-assistant spoken greeting at call start; conditional start-rules absent | Per-agent condition engine and real listening test |
 | Calendar/appointment actions | Yes | NEW: local calendar availability, concurrency-safe confirmed voice bookings, own-booking cancellation and ICS export; no external calendar sync or rescheduling | Real provider calendar adapters, reminders, team booking, flexible speech dates and end-to-end validation |
-| Live handoff to a person | Yes | Ending an IP call works; verified transfer/handoff not implemented | Consent-aware transfer + agent context handoff |
+| Live handoff to a person | Yes | NEW: approved tenant-scoped employee warm handoff inside the SAME self-hosted LiveKit room; employee accepts, real microphone identity gates agent departure and customer remains connected | PSTN transfer, customer UI, real natural speech quality, multi-route queues, staff context & production host acceptance |
 | Conversation summary/transcript | Yes | NEW: per-call opt-in short post-consent user excerpts stored locally with 14-day TTL; no recording, complete transcript or AI summary | Real consent UX, structured extraction, verified local summarization, delivery receipts and external notifications |
 | CRM/data integrations | 30+ claimed | Some standalone adapters and owner integrations, not generic audited customer tool execution | Per-tenant scoped tools, webhooks, CRM/approval workflow |
 | Incoming caller-specific context | Inbound webhook | Not implemented for independent customer calls | Authenticated tenant-bound context provider with timeout and data minimization |
@@ -96,3 +96,8 @@ The voice agent now supports call-scoped spoken consent/revocation and a bounded
 ## Real WebRTC synthetic media proof
 
 On 2026-11-03, isolated GitHub PR CI passed both two-peer real WebRTC PCM transport and actual autonomous agent audio pipeline, using self-hosted LiveKit v1.13.11 and free local fake STT/LLM/TTS. Evidence: docs/REAL_MEDIA_EVIDENCE.md. Do **not** extrapolate this to natural German speech, actual VPS capacity, iOS/PSTN calling or Fonio product parity.
+
+
+## Real employee warm handoff milestone
+
+The existing autonomous Internet agent now supports an explicit customer request for a configured, enrolled human operator. The employee accepts/declines via the browser IPCallClient, joins the same LiveKit room and the agent leaves only after the employee's actual published microphone identity is observed. A real three-participant LiveKit PR test delivered nonzero employee-to-customer audio after the AI left, while the original call remained ACTIVE. Cancellation/expiry causes durable room-scoped staff removal attempts until the last self-hosted JWT expires. See docs/STAFF_HANDOFF.md. This does NOT support traditional PSTN transfers, emergency calling or suspended-phone push notifications.
