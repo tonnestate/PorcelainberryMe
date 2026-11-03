@@ -1,0 +1,98 @@
+"""Real subprocess regression tests for self-hosted Piper process safety.
+
+Uses a temporary Python executable as a Piper stand-in. No model weights,
+audio device, real user speech, cloud account, or external API is needed.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from porcelainberryme.local_voice import LocalPiperVoice, LocalVoiceUnavailable
+
+
+class PiperProcessSafetyTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.binary = self.directory / "piper"
+        self.model = self.directory / "voice.onnx"
+        self.model.write_bytes(b"test-model-not-actually-loaded")
+        Path(str(self.model) + ".json").write_text(
+            json.dumps({"audio": {"sample_rate": 16000}}),
+            encoding="utf-8",
+        )
+
+    def write_executable(self, body: str):
+        self.binary.write_text(
+            "#!/usr/bin/env python3\n" + body + "\n",
+            encoding="utf-8",
+        )
+        self.binary.chmod(0o700)
+
+    async def test_valid_piper_raw_pcm_still_works(self):
+        self.write_executable(
+            "import sys\n"
+            "assert sys.stdin.buffer.readline().strip() == b'Hallo'\n"
+            "sys.stdout.buffer.write(bytes([4, 0]) * 320)\n",
+        )
+        adapter = LocalPiperVoice(str(self.binary), str(self.model), timeout=3)
+        packet = await adapter.synthesize("Hallo")
+        self.assertEqual(packet.sample_rate, 16000)
+        self.assertEqual(packet.pcm, bytes([4, 0]) * 320)
+
+    async def test_oversized_piper_output_is_rejected_during_read(self):
+        self.write_executable(
+            "import sys\n"
+            "sys.stdin.buffer.read()\n"
+            "sys.stdout.buffer.write(bytes([1, 2]) * 4096)\n",
+        )
+        adapter = LocalPiperVoice(str(self.binary), str(self.model), timeout=3)
+        with patch("porcelainberryme.local_voice.MAX_REPLY_BYTES", 1024):
+            with self.assertRaisesRegex(
+                LocalVoiceUnavailable, "local_piper_output_too_large"
+            ):
+                await adapter.synthesize("Hallo")
+
+    async def test_hanging_piper_is_killed_on_timeout(self):
+        self.write_executable(
+            "import sys, time\n"
+            "sys.stdin.buffer.read()\n"
+            "time.sleep(10)\n",
+        )
+        adapter = LocalPiperVoice(str(self.binary), str(self.model), timeout=0.2)
+        with self.assertRaisesRegex(LocalVoiceUnavailable, "local_piper_timeout"):
+            await asyncio.wait_for(adapter.synthesize("Hallo"), timeout=3)
+
+    async def test_cancelled_synthesis_does_not_leave_worker_running(self):
+        self.write_executable(
+            "import sys, time\n"
+            "sys.stdin.buffer.read()\n"
+            "time.sleep(10)\n",
+        )
+        adapter = LocalPiperVoice(str(self.binary), str(self.model), timeout=30)
+        job = asyncio.create_task(adapter.synthesize("Hallo"))
+        await asyncio.sleep(0.1)
+        job.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(job, timeout=3)
+
+    async def test_nonzero_exit_code_is_not_presented_as_speech(self):
+        self.write_executable(
+            "import sys\n"
+            "sys.stdin.buffer.read()\n"
+            "sys.exit(3)\n",
+        )
+        adapter = LocalPiperVoice(str(self.binary), str(self.model), timeout=3)
+        with self.assertRaisesRegex(LocalVoiceUnavailable, "local_piper_failed"):
+            await adapter.synthesize("Hallo")
+
+
+if __name__ == "__main__":
+    unittest.main()
