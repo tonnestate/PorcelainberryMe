@@ -32,6 +32,7 @@ STOP = frozenset({
     "welches", "sind", "ist", "hat", "haben", "kann", "können",
     "ich", "du", "ihr", "wir", "sie", "mir", "mich", "uns",
     "bitte", "möchte", "wissen", "erfahren", "gibt", "es",
+    "lautet", "bedeutet", "eigentlich", "genau", "dazu", "jetzt",
     "mein", "meine", "dein", "unser", "unsere",
 })
 
