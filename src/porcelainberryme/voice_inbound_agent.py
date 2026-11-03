@@ -45,6 +45,36 @@ def _held(exc) -> bool:
     )
 
 
+async def run_fenced_voice_session(session, client, call_id: str, lease: str):
+    """Heartbeat from BEFORE media join through the full WebRTC session.
+
+    A slow initial network connection or slow greeting must not allow
+    another worker to reclaim the call while this process still controls
+    the media. If the heartbeat fails, cancel the media worker at once.
+    """
+    async def renew():
+        while True:
+            await client.heartbeat_inbound(call_id, lease)
+            await asyncio.sleep(4.0)
+
+    voice = asyncio.create_task(session.speak(call_id))
+    keeper = asyncio.create_task(renew())
+    try:
+        done, _ = await asyncio.wait(
+            {voice, keeper}, return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            task.result()
+        if keeper in done and voice not in done:
+            raise RuntimeError("inbound_lease_keeper_stopped")
+        return
+    finally:
+        for task in (voice, keeper):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(voice, keeper, return_exceptions=True)
+
+
 async def serve_inbound(*, tenant: str, agent_id: str,
                         identity_secret: str,
                         whisper_model: str, ollama_model: str,
@@ -155,11 +185,8 @@ async def serve_inbound(*, tenant: str, agent_id: str,
                         greeting=getattr(llm, "greeting", None)
                         or "Guten Tag. Wie kann ich Ihnen helfen?",
                     )
-                    await session.speak(
-                        call_id,
-                        heartbeat=lambda: client.heartbeat_inbound(
-                            call_id, lease,
-                        ),
+                    await run_fenced_voice_session(
+                        session, client, call_id, lease,
                     )
                 except Exception as exc:
                     if max_sessions is not None:
