@@ -214,6 +214,44 @@ class VoiceBookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("genauer", response)
         self.assertEqual(self.store.bookings("client", "assistant", "person1"), [])
 
+    async def test_explicit_voice_cancellation_only_by_booking_owner(self):
+        self.store.book(
+            "client", "assistant", "person1", "2026-11-09T14:00",
+            idempotency_key="voice-cancel-booking-1",
+        )
+        suggestion = await self.voice.respond(
+            "Ich möchte meinen Termin am 09.11.2026 um 14 Uhr stornieren.", [],
+        )
+        self.assertIn("Ja, Termin stornieren", suggestion)
+        # No mutation on a request without confirmation.
+        self.assertEqual(self.store.bookings(
+            "client", "assistant", "person1")[0]["status"], "BOOKED")
+        wrong = AppointmentVoiceResponder(
+            self.path, "client", "assistant", "intruder",
+            self.voice.fallback, clock=lambda: self.now[0],
+        )
+        self.assertIn("keine stornierbare", await wrong.respond(
+            "Termin am 09.11.2026 14 Uhr absagen", [],
+        ))
+        self.assertIn("zuerst", await wrong.respond("Ja, Termin stornieren", []))
+        result = await self.voice.respond("Ja, bitte Termin stornieren!", [])
+        self.assertIn("wurde storniert", result)
+        self.assertEqual(self.store.bookings(
+            "client", "assistant", "person1")[0]["status"], "CANCELLED")
+        self.assertTrue(self.store.check(
+            "client", "assistant", "2026-11-09T14:00"))
+        self.assertIn("zuerst", await self.voice.respond("Ja Termin stornieren", []))
+
+    async def test_rejected_cancellation_has_no_side_effect(self):
+        self.store.book(
+            "client", "assistant", "person1", "2026-11-09T14:00",
+            idempotency_key="voice-cancel-booking-2",
+        )
+        await self.voice.respond("Termin 09.11.2026 14 Uhr absagen", [])
+        await self.voice.respond("Nein", [])
+        self.assertEqual(self.store.bookings(
+            "client", "assistant", "person1")[0]["status"], "BOOKED")
+
     async def test_collision_between_proposal_and_confirmation(self):
         await self.voice.respond("Termin am 09.11.2026 um 16 Uhr", [])
         self.store.book("client", "assistant", "other", "2026-11-09T16:00",
