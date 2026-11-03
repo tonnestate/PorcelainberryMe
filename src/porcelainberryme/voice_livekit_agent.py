@@ -248,9 +248,16 @@ class LiveKitAgentCall:
             if self._stream_task is not None:
                 self._stream_task.cancel()
                 await asyncio.gather(self._stream_task, return_exceptions=True)
+            # Freeze completed, heard turns before VoiceTurnEngine.close()
+            # clears its in-memory history. Persist only with explicit
+            # per-call user opt-in; transport teardown always takes priority.
+            finished_turns = list(self._engine.history)
             await self._engine.close()
             await room.disconnect()
             await self._source.aclose()
+            persist = getattr(self.llm, "persist_if_consented", None)
+            if persist is not None:
+                await persist(call_id, finished_turns)
 
 
 async def call_human(*, target: str, tenant: str, control_token: str,
@@ -285,6 +292,15 @@ async def call_human(*, target: str, tenant: str, control_token: str,
         from .appointments import AppointmentVoiceResponder
         llm = AppointmentVoiceResponder(
             calendar_db, tenant, agent_id, target, llm,
+        )
+    notes_db = os.environ.get("PB_CALL_NOTES_DB", "").strip()
+    if notes_db:
+        # Note storage defaults to OFF. Even with a configured database,
+        # this wrapper requires an explicit spoken opt-in in the call.
+        from .call_notes import CallNotesStore, ConsentedNotesResponder
+        llm = ConsentedNotesResponder(
+            llm, CallNotesStore(notes_db),
+            tenant=tenant, assistant=agent_id, caller=target,
         )
     tts = LocalPiperVoice(piper_binary, piper_model)
     client = CallControlClient(control_token)
