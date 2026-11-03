@@ -182,7 +182,10 @@ class LiveKitAgentCall:
         speaker = LiveKitPcmSpeaker(
             self._source, self.rtc, sample_rate=self.tts.sample_rate,
         )
-        self._engine = VoiceTurnEngine(self.stt, self.llm, self.tts, speaker)
+        self._engine = VoiceTurnEngine(
+            self.stt, self.llm, self.tts, speaker,
+            on_unavailable=self._closed.set,
+        )
 
         @room.on("track_subscribed")
         def track_subscribed(track, publication, participant):
