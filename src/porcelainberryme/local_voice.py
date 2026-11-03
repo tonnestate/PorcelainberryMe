@@ -285,19 +285,40 @@ class LocalPiperVoice:
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        try:
-            output, _ = await asyncio.wait_for(
-                process.communicate((text.strip() + "\n").encode("utf-8")),
-                timeout=self.timeout,
-            )
+        async def bounded_capture():
+            # communicate() would buffer unbounded stdout in RAM before the
+            # AudioPacket length check. Drain in bounded chunks instead.
+            process.stdin.write((text.strip() + "\n").encode("utf-8"))
+            await process.stdin.drain()
+            process.stdin.close()
+            chunks = []
+            total = 0
+            while True:
+                chunk = await process.stdout.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_REPLY_BYTES:
+                    raise LocalVoiceUnavailable("local_piper_output_too_large")
+                chunks.append(chunk)
+            await process.wait()
             if process.returncode != 0:
                 raise LocalVoiceUnavailable("local_piper_failed")
+            return b"".join(chunks)
+
+        try:
+            output = await asyncio.wait_for(
+                bounded_capture(), timeout=self.timeout,
+            )
             return AudioPacket(output, self.sample_rate)
-        except BaseException:
+        except asyncio.TimeoutError as exc:
+            raise LocalVoiceUnavailable("local_piper_timeout") from exc
+        finally:
+            # The process must not continue using host CPU/RAM after a
+            # cancelled speech turn or a failed size/time limit.
             if process.returncode is None:
                 process.kill()
                 await process.wait()
-            raise
 
 
 class VoiceTurnEngine:
