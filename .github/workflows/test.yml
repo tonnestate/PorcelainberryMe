@@ -21,3 +21,6 @@ jobs:
         run: python -m compileall -q src
       - name: Run offline tests
         run: python -m unittest discover -s tests -v
+
+      - name: Run browser SDK offline tests (Node built-in runner)
+        run: node --test clients/browser/ip_calls_client.test.mjs
