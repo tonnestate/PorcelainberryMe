@@ -16,7 +16,7 @@ Sources:
 | Function | Fonio public claim | PorcelainberryMe as of this change | Release gate |
 | --- | --- | --- | --- |
 | Ordinary PSTN numbers (inbound/outbound) | Yes, number/SIP/carrier plans | NO PSTN access; only Internet identities | Carrier interconnect required; impossible to claim free PSTN from Internet alone |
-| Real incoming calls | Yes | NEW: encrypted, opt-in first-party PWA Web Push ringing and staff alerts with durable event outbox, authenticated multi-device subscriptions and click-to-resume; no native CallKit or measured iPhone delivery | Live installed iPhone acceptance, app UI, remote TURN/TLS, native UX if required |
+| Real incoming calls | Yes | NEW: opt-in PWA Web Push and authenticated, unstyled first-party browser call controls (accept/decline/hangup/reconnect) integrated with self-hosted LiveKit; no native CallKit or measured iPhone delivery | Secure host login, deployable app/build, real iPhone acceptance, remote TURN/TLS |
 | Outbound AI calls | Yes on supported plans | Real media CI verifies IP origination, acceptance and actual LiveKit voice-agent PCM with local fake speech providers; no PSTN numbers | Installed real models, human call quality, outbound consent UX, caller abuse testing |
 | Low-latency natural conversation | Yes | Real self-hosted PCM transport and full agent pipeline proven with synthetic audio; natural model latency and turn quality remain unverified | German Whisper/Ollama/Piper audio and interruption measurements |
 | Many voices/languages | 120+ voices, 60+ languages listed | One explicitly installed local Piper voice; German local STT setting | Model inventory, licenses, pronunciation, tests |
@@ -106,3 +106,8 @@ The existing autonomous Internet agent now supports an explicit customer request
 ## Browser push notifications milestone
 
 PorcelainberryMe now has an optional self-hosted VAPID Web Push sender, durable pending-call notifications, tenant/device-scoped subscription API, and first-party PWA service worker. Apple supports Web Push for Home Screen apps on iOS 16.4+ with a direct user permission gesture, but a submitted push request is **not evidence of ringing or a delivered phone call**. The service is not a native CallKit/PSTN phone provider. See docs/WEB_PUSH_CALLS.md.
+
+
+## Browser call console milestone
+
+The existing IPCallClient has a minimal first-party UI controller (clients/browser/call_console.mjs) that requires an authenticated host-provided identity token. It explicitly accepts/rejects incoming calls and staff handoffs, starts outbound Internet-identity calls, connects microphone/remote audio to LiveKit only after a user action, supports manual reconnection and verifies every incoming push call ID against current server state. The component is deliberately unstyled and does not create another app, an unsafe demo login or token storage. See docs/BROWSER_CALL_CONSOLE.md. A complete, deployed login/signup/PWA package and real mobile acceptance remain OPEN.
