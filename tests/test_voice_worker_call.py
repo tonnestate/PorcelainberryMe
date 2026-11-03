@@ -205,6 +205,77 @@ class OutboundAgentTests(unittest.IsolatedAsyncioTestCase):
                            "Bitte wende dich an das zuständige Team."), observed)
             self.assertIn("ended", observed)
 
+    async def test_completed_staff_handoff_does_not_hangup_customer(self):
+        media = ModuleType("livekit")
+        media.rtc = SimpleNamespace()
+        events = []
+        state = {"transferred": False}
+
+        class Control:
+            def __init__(self, token):
+                self.token = token
+
+            async def whoami(self):
+                return {"role": "agent", "tenant": "tenantA", "subject": "agentA"}
+
+            async def originate(self, target, request_id):
+                events.append(("dial", target))
+                return {"id": "h" * 32, "agent_initiated": True}
+
+            async def status(self, call_id):
+                return {
+                    "state": "ACTIVE",
+                    "handoff": {
+                        "state": "CONNECTED" if state["transferred"] else "OFFERED",
+                        "target": "staff_member",
+                    },
+                }
+
+            async def offer_handoff(self, call_id, idem):
+                events.append(("offered", call_id))
+                return {"state": "OFFERED", "target": "staff_member"}
+
+            async def hangup(self, call_id):
+                events.append(("unexpected_hangup", call_id))
+
+        class Session:
+            def __init__(self, **kwargs):
+                self.llm = kwargs["llm"]
+                events.append(("responder", type(self.llm).__name__))
+
+            async def speak(self, call_id):
+                self_text = await self.llm.respond(
+                    "Bitte verbinden Sie mich mit einem Mitarbeiter.", [],
+                )
+                events.append(("agent_reply", self_text))
+                state["transferred"] = True
+
+        with patch.dict(sys.modules, {"livekit": media}), \
+             patch.dict(os.environ, {
+                 "PB_ENABLE_STAFF_HANDOFF": "1",
+                 "PB_AGENT_KNOWLEDGE_DB": "",
+                 "PB_APPOINTMENT_DB": "",
+                 "PB_CALL_NOTES_DB": "",
+             }), \
+             patch("porcelainberryme.voice_livekit_agent.LocalFasterWhisper",
+                   return_value=object()), \
+             patch("porcelainberryme.voice_livekit_agent.LocalPiperVoice",
+                   return_value=object()), \
+             patch("porcelainberryme.voice_livekit_agent.LocalOllamaResponder",
+                   return_value=SimpleNamespace(preflight=AsyncMock())), \
+             patch("porcelainberryme.voice_livekit_agent.CallControlClient", Control), \
+             patch("porcelainberryme.voice_livekit_agent.LiveKitAgentCall", Session):
+            await call_human(
+                target="humanA", tenant="tenantA", agent_id="agentA",
+                control_token="local-token", request_id="handoff-call-0001",
+                whisper_model="/already-existing", ollama_model="local-qwen",
+                piper_binary="/already-existing-piper",
+                piper_model="/already-existing-voice",
+            )
+        self.assertIn(("responder", "HumanHandoffResponder"), events)
+        self.assertIn(("offered", "h" * 32), events)
+        self.assertNotIn(("unexpected_hangup", "h" * 32), events)
+
     async def test_absent_local_llm_never_triggers_agent_ringing(self):
         from porcelainberryme.local_voice import LocalVoiceUnavailable
         media_module = ModuleType("livekit")
