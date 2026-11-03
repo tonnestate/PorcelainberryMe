@@ -61,7 +61,7 @@ class InboundAgentMixin:
                     (tenant, assistant, int(enabled)),
                 )
 
-    def _check_inbound(self, db, claims, call):
+    def _check_inbound(self, db, claims, call, *, require_enabled=True):
         from .ip_calls import CallError
         if (claims["role"] != "agent"
                 or claims["sub"] != call["callee"]
@@ -73,8 +73,12 @@ class InboundAgentMixin:
             "WHERE tenant=? AND assistant=?",
             (claims["tenant"], claims["sub"]),
         ).fetchone()
-        if row is None or not row["enabled"]:
+        if require_enabled and (row is None or not row["enabled"]):
             raise CallError("inbound_agent_not_enabled", 403)
+
+    def _is_inbound_transferred(self, db, call_id):
+        handoff = self._handoff_row(db, call_id)
+        return handoff is not None and handoff["state"] == "CONNECTED"
 
     def claim_inbound(self, claims, call_id: str):
         """Claim once; takeover only after previous lease has expired."""
@@ -139,7 +143,7 @@ class InboundAgentMixin:
                 ).fetchone()
                 if (call["state"] != "ACTIVE" or row is None
                         or row["lease"] != lease or row["expires_at"] <= now
-                        or (self._handoff_row(db, call_id) or {}).get("state") == "CONNECTED"):
+                        or self._is_inbound_transferred(db, call_id)):
                     raise CallError("inbound_lease_lost", 409)
                 expiry = now + INBOUND_LEASE_SECONDS
                 db.execute(
@@ -159,7 +163,7 @@ class InboundAgentMixin:
         with closing(self._open()) as db:
             with db:
                 call = self._get(db, claims["tenant"], claims["sub"], call_id)
-                self._check_inbound(db, claims, call)
+                self._check_inbound(db, claims, call, require_enabled=False)
                 row = db.execute(
                     "SELECT lease FROM ip_inbound_leases WHERE call_id=?",
                     (call_id,),
