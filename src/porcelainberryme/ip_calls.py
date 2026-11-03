@@ -502,21 +502,28 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                 changed = con.execute("SELECT * FROM ip_calls WHERE id=?", (call_id,)).fetchone()
                 return self._visible(changed, claims["sub"])
 
-    def media_credentials(self, claims: dict, call_id: str) -> dict:
+    def media_credentials(self, claims: dict, call_id: str,
+                          *, inbound_lease: str | None = None) -> dict:
         now = self._now()
         with closing(self._open()) as con:
             with con:
                 call = self._get(con, claims["tenant"], claims["sub"], call_id)
                 if call["state"] != "ACTIVE":
                     raise CallError("call_not_accepted", 409)
+                if (claims["role"] == "agent" and not call["agent"]
+                        and claims["sub"] == call["callee"]):
+                    self._verify_inbound_agent_lease(
+                        con, call, claims, inbound_lease, now,
+                    )
                 handoff = self._handoff_row(con, call_id)
                 is_staff = (handoff is not None
                             and claims["sub"] == handoff["target"])
                 if is_staff and (claims["role"] != "human"
                                  or handoff["state"] not in ("ACCEPTED", "CONNECTED")):
                     raise CallError("handoff_not_accepted", 403)
+                agent_identity = call["caller"] if call["agent"] else call["callee"]
                 if handoff is not None and handoff["state"] == "CONNECTED" and (
-                    claims["sub"] == call["caller"]
+                    claims["role"] == "agent" and claims["sub"] == agent_identity
                 ):
                     raise CallError("agent_already_handed_off", 403)
                 if not (self.media_key and self.media_secret and self.media_url):
@@ -692,11 +699,18 @@ def make_handler(registry: CallRegistry):
                         if parts[3] in ("accept", "decline", "hangup"):
                             return self._reply(200, registry.decide(claims, call_id, parts[3]))
                         if parts[3] == "media-token":
-                            return self._reply(200, registry.media_credentials(claims, call_id))
+                            body = self._body() if int(
+                                self.headers.get("Content-Length", "0") or "0"
+                            ) > 0 else {}
+                            return self._reply(200, registry.media_credentials(
+                                claims, call_id, inbound_lease=body.get("lease"),
+                            ))
                         if parts[3] == "handoff":
                             body = self._body()
                             return self._reply(201, registry.offer_handoff(
-                                claims, call_id, idempotency_key=body.get("idempotency_key")))
+                                claims, call_id,
+                                idempotency_key=body.get("idempotency_key"),
+                                lease=body.get("lease")))
                     if (len(parts) == 5 and self.command == "POST"
                             and parts[3] == "inbound"):
                         if parts[4] == "claim":
@@ -711,8 +725,11 @@ def make_handler(registry: CallRegistry):
                     if (len(parts) == 5 and self.command == "POST"
                             and parts[3] == "handoff"
                             and parts[4] in ("accept", "decline", "cancel", "complete")):
+                        body = self._body() if int(
+                            self.headers.get("Content-Length", "0") or "0"
+                        ) > 0 else {}
                         return self._reply(200, registry.decide_handoff(
-                            claims, call_id, parts[4]))
+                            claims, call_id, parts[4], lease=body.get("lease")))
                 raise CallError("not_found", 404)
             except CallError as exc:
                 return self._reply(exc.status, {"error": exc.code})
