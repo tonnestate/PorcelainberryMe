@@ -333,6 +333,8 @@ class AppointmentStore:
                 if not booking:
                     raise AppointmentError("booking_not_found")
                 if booking["status"] == "BOOKED":
+                    if booking["start_utc"] <= int(self.clock()):
+                        raise AppointmentError("cannot_cancel_started_appointment")
                     db.execute(
                         "UPDATE pb_appointments SET status='CANCELLED' WHERE id=?",
                         (booking_id,),
@@ -515,6 +517,18 @@ class AppointmentVoiceResponder:
                 "Wenn Sie verbindlich buchen möchten, sagen Sie bitte: "
                 "Ja, Termin buchen."
             )
+        if intent or cancel_intent:
+            # Never defer malformed booking/cancellation requests to a
+            # general LLM which might claim a nonexistent booking.
+            return (
+                "Bitte nennen Sie ein eindeutiges Datum mit Uhrzeit, "
+                "zum Beispiel: Termin am 09.11.2026 um 14 Uhr."
+            )
+        if normalized in {"ja", "ja bitte", "ok", "okay", "einverstanden"}:
+            if self._pending is not None:
+                return "Bitte bestätigen Sie ausdrücklich mit: Ja, Termin buchen."
+            if self._cancel_pending is not None:
+                return "Bitte bestätigen Sie ausdrücklich mit: Ja, Termin stornieren."
         return await self.fallback.respond(text, history)
 
 
