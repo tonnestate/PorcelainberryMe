@@ -272,6 +272,9 @@ async def call_human(*, target: str, tenant: str, control_token: str,
         llm = ApprovedKnowledgeResponder(approved_db, tenant, agent_id)
     else:
         llm = LocalOllamaResponder(ollama_model)
+        # Fail before generating a ringing invitation if the local model
+        # is absent, misnamed or unreachable. Never download on demand.
+        await llm.preflight()
     calendar_db = os.environ.get("PB_APPOINTMENT_DB", "").strip()
     if calendar_db:
         # Deterministic local calendar operations require explicit spoken
