@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 import base64
+from io import BytesIO
 from http.server import ThreadingHTTPServer
 import json
 from pathlib import Path
 import tempfile
 import threading
 import unittest
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from porcelainberryme.media_cleanup import LiveKitRoomTerminator, MediaTeardownError
 from porcelainberryme.ip_calls import (
     CallError, CallRegistry, make_handler,
     mint_identity_token, verify_identity_token,
@@ -82,6 +84,64 @@ class InternetCallsTest(unittest.TestCase):
         self.store.decide(self.bob, ringing["id"], "hangup")
         with self.assertRaisesRegex(CallError, "call_not_accepted"):
             self.store.media_credentials(self.agent, ringing["id"])
+
+    def test_media_teardown_is_durable_and_repeated_until_token_expiration(self):
+        created = self._ring(self.agent)
+        self.store.decide(self.bob, created["id"], "accept")
+        credential = self.store.media_credentials(self.bob, created["id"])
+        self.assertLessEqual(credential["expires_at"] - self.tick[0], 12)
+        assert self.store.reconcile_media(lambda room: self.fail("active room deleted"))["reviewed"] == 0
+        self.store.decide(self.bob, created["id"], "hangup")
+        deleted = []
+        done = self.store.reconcile_media(lambda room: deleted.append(room))
+        self.assertEqual(done["reviewed"], 1)
+        self.assertEqual(done["completed"], 0)
+        self.assertEqual(deleted, ["pb_" + created["id"]])
+        # A short-lived join token remains potentially usable until expiry;
+        # deleting the room once is not considered final proof of revocation.
+        self.tick[0] += 2
+        self.assertEqual(self.store.reconcile_media(lambda room: deleted.append(room))["reviewed"], 1)
+        self.tick[0] += 20
+        results = self.store.reconcile_media(lambda room: deleted.append(room))
+        self.assertEqual(results["completed"], 1)
+        self.assertEqual(self.store.reconcile_media(lambda room: deleted.append(room))["reviewed"], 0)
+        self.assertEqual(len(deleted), 3)
+
+    def test_media_teardown_retries_after_failure_and_database_restart(self):
+        created = self._ring(self.agent)
+        self.store.decide(self.bob, created["id"], "accept")
+        self.store.media_credentials(self.agent, created["id"])
+        self.store.decide(self.bob, created["id"], "hangup")
+        result = self.store.reconcile_media(
+            lambda room: (_ for _ in ()).throw(OSError("self_hosted_livekit_unavailable"))
+        )
+        self.assertEqual(result["retry_pending"], 1)
+        restarted = CallRegistry(
+            self.store.path, identity_secret=self.secret,
+            media_key="local-test-key", media_secret=self.media_secret,
+            media_url="ws://127.0.0.1:7880", clock=lambda: self.tick[0],
+        )
+        self.tick[0] += 3
+        done = []
+        self.assertEqual(
+            restarted.reconcile_media(lambda room: done.append(room))["reviewed"], 1
+        )
+        self.assertEqual(done, ["pb_" + created["id"]])
+        self.tick[0] += 20
+        self.assertEqual(
+            restarted.reconcile_media(lambda room: done.append(room))["completed"], 1
+        )
+
+    def test_active_call_expiry_enqueues_room_termination(self):
+        created = self._ring()
+        self.store.decide(self.bob, created["id"], "accept")
+        self.store.media_credentials(self.alice, created["id"])
+        self.tick[0] += 3601
+        ended = []
+        result = self.store.reconcile_media(lambda room: ended.append(room))
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(ended, ["pb_" + created["id"]])
+        self.assertEqual(self.store.status(self.bob, created["id"])["state"], "TIMED_OUT")
 
     def test_tenant_and_subject_separation(self):
         ringing = self._ring()
@@ -193,6 +253,79 @@ class InternetCallsTest(unittest.TestCase):
                          credentials["room"])
         status, ended = request("POST", f"/v1/ip-calls/{created['id']}/hangup", self.agent)
         self.assertEqual(ended["state"], "ENDED")
+
+
+class LiveKitTwirpTest(unittest.TestCase):
+    def setUp(self):
+        self.calls = []
+        self.time = 1_800_000_000
+        self.secret = "media-secret-abcdefghijklmnop-123456789"
+
+    def _fake_open(self, request, timeout):
+        self.assertEqual(timeout, 3.0)
+        self.calls.append(request)
+        self.assertEqual(
+            request.full_url,
+            "http://127.0.0.1:7880/twirp/livekit.RoomService/DeleteRoom",
+        )
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(
+            json.loads(request.data),
+            {"room": "pb_" + "a" * 32},
+        )
+        auth = request.get_header("Authorization")
+        self.assertTrue(auth.startswith("Bearer "))
+        token = auth[7:].split(".")
+        claims = json.loads(base64.urlsafe_b64decode(
+            token[1] + "=" * (-len(token[1]) % 4)))
+        self.assertEqual(claims["video"], {"roomCreate": True})
+        self.assertEqual(claims["iss"], "local-test-key")
+
+        class Response(BytesIO):
+            status = 200
+
+        return Response(b"{}")
+
+    def test_delete_room_uses_real_twirp_protocol_not_provider_sdk(self):
+        endpoint = LiveKitRoomTerminator(
+            "ws://127.0.0.1:7880", "local-test-key", self.secret,
+            http_open=self._fake_open, clock=lambda: self.time,
+        )
+        endpoint.delete_room("pb_" + "a" * 32)
+        self.assertEqual(len(self.calls), 1)
+        with self.assertRaises(ValueError):
+            endpoint.delete_room("room-attacker")
+
+    def test_not_found_must_be_typed_twirp_error(self):
+        def missing(_request, timeout):
+            raise HTTPError(
+                "http://127.0.0.1:7880/", 404, "Not Found", {},
+                BytesIO(b'{"code":"not_found","msg":"no active room"}'),
+            )
+        endpoint = LiveKitRoomTerminator(
+            "ws://127.0.0.1:7880", "local-test-key", self.secret,
+            http_open=missing, clock=lambda: self.time,
+        )
+        endpoint.delete_room("pb_" + "a" * 32)
+
+        def wrong_route(_request, timeout):
+            raise HTTPError(
+                "http://127.0.0.1:7880/", 404, "Not Found", {},
+                BytesIO(b"<html>wrong proxy</html>"),
+            )
+        endpoint.http_open = wrong_route
+        with self.assertRaises(MediaTeardownError):
+            endpoint.delete_room("pb_" + "a" * 32)
+
+    def test_network_failure_does_not_claim_disconnection(self):
+        endpoint = LiveKitRoomTerminator(
+            "ws://127.0.0.1:7880", "local-test-key", self.secret,
+            http_open=lambda req, timeout: (_ for _ in ()).throw(
+                URLError("backend unavailable")
+            ),
+        )
+        with self.assertRaises(MediaTeardownError):
+            endpoint.delete_room("pb_" + "a" * 32)
 
 
 if __name__ == "__main__":
