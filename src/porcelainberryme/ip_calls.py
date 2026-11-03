@@ -34,6 +34,10 @@ MEDIA_TOKEN_SECONDS = 12
 MEDIA_REVOKE_GRACE_SECONDS = 5
 MEDIA_CLEANUP_INTERVAL_SECONDS = 2
 MAX_BODY = 4096
+AGENT_COOLDOWN_SECONDS = 120
+MAX_TENANT_ACTIVE_CALLS = 40
+EVENT_RETENTION_SECONDS = 30 * 86400
+MAX_EVENTS_PER_RECIPIENT = 1000
 
 
 class CallError(Exception):
@@ -154,6 +158,7 @@ class CallRegistry:
                 CREATE TABLE IF NOT EXISTS ip_call_users (
                   tenant TEXT NOT NULL, subject TEXT NOT NULL,
                   agent_calls INTEGER NOT NULL DEFAULT 0,
+                  do_not_disturb INTEGER NOT NULL DEFAULT 0,
                   PRIMARY KEY(tenant, subject)
                 );
                 CREATE TABLE IF NOT EXISTS ip_call_events (
@@ -164,6 +169,8 @@ class CallRegistry:
                 );
                 CREATE INDEX IF NOT EXISTS ip_call_inbox
                   ON ip_call_events(tenant, receiver, seq);
+                CREATE INDEX IF NOT EXISTS ip_call_event_retention
+                  ON ip_call_events(created_at);
                 CREATE TABLE IF NOT EXISTS ip_media_teardown (
                   call_id TEXT PRIMARY KEY, room TEXT NOT NULL,
                   latest_token_exp INTEGER NOT NULL,
@@ -172,6 +179,16 @@ class CallRegistry:
                   completed INTEGER NOT NULL DEFAULT 0
                 );
             """)
+            # Existing installations migrate safely in place; previous
+            # registration/consent preferences remain unchanged.
+            columns = {
+                row["name"] for row in con.execute("PRAGMA table_info(ip_call_users)")
+            }
+            if "do_not_disturb" not in columns:
+                con.execute(
+                    "ALTER TABLE ip_call_users ADD COLUMN do_not_disturb "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _conn(self):
         con = sqlite3.connect(self.path, timeout=20)
@@ -192,6 +209,22 @@ class CallRegistry:
                     (tenant, subject, int(allow_agent_calls)),
                 )
 
+    def set_do_not_disturb(self, tenant: str, subject: str, enabled: bool) -> None:
+        """Trusted enrollment interface. No unauthenticated HTTP mutation."""
+        _identity(tenant)
+        _identity(subject)
+        if type(enabled) is not bool:
+            raise CallError("invalid_dnd_preference")
+        with closing(self._conn()) as con:
+            with con:
+                updated = con.execute(
+                    "UPDATE ip_call_users SET do_not_disturb=? "
+                    "WHERE tenant=? AND subject=?",
+                    (int(enabled), tenant, subject),
+                )
+                if updated.rowcount != 1:
+                    raise CallError("account_not_enrolled", 404)
+
     def _now(self):
         return int(self.clock())
 
@@ -201,6 +234,18 @@ class CallRegistry:
             "VALUES(?,?,?,?,?)",
             (call["id"], call["tenant"], receiver, kind, now),
         )
+        # A hostile or stuck originator must not fill the event database
+        # indefinitely. Keep the newest N events for this recipient.
+        cutoff = con.execute(
+            "SELECT seq FROM ip_call_events WHERE tenant=? AND receiver=? "
+            "ORDER BY seq DESC LIMIT 1 OFFSET ?",
+            (call["tenant"], receiver, MAX_EVENTS_PER_RECIPIENT - 1),
+        ).fetchone()
+        if cutoff is not None:
+            con.execute(
+                "DELETE FROM ip_call_events WHERE tenant=? AND receiver=? AND seq<?",
+                (call["tenant"], receiver, cutoff["seq"]),
+            )
 
     @staticmethod
     def _queue_media_teardown(con, call, now):
@@ -225,7 +270,10 @@ class CallRegistry:
     def _open(self):
         con = self._conn()
         con.execute("BEGIN IMMEDIATE")
-        self._transition_expired(con, self._now())
+        now = self._now()
+        self._transition_expired(con, now)
+        con.execute("DELETE FROM ip_call_events WHERE created_at<?",
+                    (now - EVENT_RETENTION_SECONDS,))
         return con
 
     @staticmethod
@@ -269,17 +317,35 @@ class CallRegistry:
                         raise CallError("idempotency_conflict", 409)
                     return self._visible(prior, caller)
                 users = {
-                    row["subject"]: row["agent_calls"]
+                    row["subject"]: row
                     for row in con.execute(
-                        "SELECT subject, agent_calls FROM ip_call_users "
+                        "SELECT subject, agent_calls, do_not_disturb FROM ip_call_users "
                         "WHERE tenant=? AND subject IN (?,?)",
                         (tenant, caller, callee),
                     )
                 }
                 if caller not in users or callee not in users:
                     raise CallError("account_not_enrolled", 403)
-                if claims["role"] == "agent" and not users[callee]:
-                    raise CallError("agent_call_not_opted_in", 403)
+                if users[callee]["do_not_disturb"]:
+                    raise CallError("recipient_do_not_disturb", 409)
+                if claims["role"] == "agent":
+                    if not users[callee]["agent_calls"]:
+                        raise CallError("agent_call_not_opted_in", 403)
+                    # Per-recipient cooldown covers all agents in this tenant
+                    # and survives service restarts. Replays are caught above.
+                    recent = con.execute(
+                        "SELECT 1 FROM ip_calls WHERE tenant=? AND callee=? "
+                        "AND agent=1 AND created_at>? LIMIT 1",
+                        (tenant, callee, now - AGENT_COOLDOWN_SECONDS),
+                    ).fetchone()
+                    if recent:
+                        raise CallError("agent_call_cooldown", 429)
+                count = con.execute(
+                    "SELECT COUNT(*) FROM ip_calls WHERE tenant=? "
+                    "AND state IN ('RINGING', 'ACTIVE')", (tenant,),
+                ).fetchone()[0]
+                if count >= MAX_TENANT_ACTIVE_CALLS:
+                    raise CallError("tenant_call_capacity_exceeded", 429)
                 busy = con.execute(
                     "SELECT 1 FROM ip_calls WHERE tenant=? "
                     "AND state IN ('RINGING', 'ACTIVE') "
@@ -534,6 +600,11 @@ def main():
     token.add_argument("--tenant", required=True)
     token.add_argument("--subject", required=True)
     token.add_argument("--role", choices=["human", "agent"], required=True)
+    dnd = sub.add_parser("dnd", help="Local per-user do-not-disturb setting")
+    dnd.add_argument("--tenant", required=True)
+    dnd.add_argument("--subject", required=True)
+    dnd.add_argument("--enabled", action="store_true")
+    dnd.add_argument("--disabled", action="store_true")
     enroll = sub.add_parser("enroll", help="Local trusted enrollment/agent-call consent")
     enroll.add_argument("--tenant", required=True)
     enroll.add_argument("--subject", required=True)
@@ -559,6 +630,11 @@ def main():
     )
     if args.cmd == "enroll":
         registry.provision(args.tenant, args.subject, allow_agent_calls=args.allow_agent_calls)
+        return
+    if args.cmd == "dnd":
+        if args.enabled == args.disabled:
+            parser.error("select exactly one of --enabled or --disabled")
+        registry.set_do_not_disturb(args.tenant, args.subject, args.enabled)
         return
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(registry))
     stop = threading.Event()
