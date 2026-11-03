@@ -149,7 +149,7 @@ class HandoffMixin:
                 call = self._get(con, claims["tenant"], claims["sub"], call_id)
                 owner = call["caller"] if call["agent"] else call["callee"]
                 if claims["sub"] != owner:
-                    raise CallError("only_call_agent_can_transfer", 403)
+                    raise CallError("only_originating_agent_can_transfer", 403)
                 self._verify_inbound_agent_lease(con, call, claims, lease, now)
                 if call["state"] != "ACTIVE":
                     raise CallError("handoff_requires_active_call", 409)
@@ -232,7 +232,7 @@ class HandoffMixin:
                 else:
                     owner = call["caller"] if call["agent"] else call["callee"]
                     if actor != owner or claims["role"] != "agent":
-                        raise CallError("only_call_agent_can_transfer", 403)
+                        raise CallError("only_originating_agent_can_transfer", 403)
                     self._verify_inbound_agent_lease(con, call, claims, lease, now)
                     expected = ("OFFERED", "ACCEPTED") if action == "cancel" else ("ACCEPTED",)
                 target = {
