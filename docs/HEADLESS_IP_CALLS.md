@@ -10,7 +10,7 @@ This is a VOIP/IP communications provider **within its own reachable Internet us
 
 ## Architectural decision: separate four responsibilities
 
-1. **Call control**: PorcelainberryMe owns authentication, tenant-scoped call invitations, agent origination, ringing, acceptance, rejection, hangup, timeouts, events and rate limiting. The first bounded implementation is in src/porcelainberryme/ip_calls.py.
+1. **Call control**: PorcelainberryMe owns authentication, tenant-scoped call invitations, agent origination, ringing, acceptance, rejection, hangup, timeouts and events; production rate limiting is still missing. The first bounded implementation is in src/porcelainberryme/ip_calls.py.
 2. **Media**: Self-hosted LiveKit (open-source Apache 2.0) is the donor for WebRTC media transport, secure rooms, participant audio and NAT/ICE connectivity. This repository mints a narrowly scoped LiveKit room token, but has NOT installed LiveKit or tested live audio. Unlike a proprietary provider, no LiveKit Cloud account is required.
 3. **Speech**: A separate, locally running voice worker must listen, use offline STT/LLM/TTS and publish natural speech in the same room. No provider, worker, model weights, streaming performance or acceptable voice quality have been verified or implemented for this path. Pipecat can be evaluated as the speech orchestration donor; it is NOT a second media-server requirement.
 4. **Client and notification**: An authenticated browser/mobile client displays incoming invites and joins the LiveKit room after human acceptance. The first API has authenticated cursor-based polling only; it cannot ring a suspended iOS app in the background. Native push/call UI requires separate platform work.
@@ -29,7 +29,7 @@ Bearer identity tokens are signed by a trusted backend with subject, tenant, rol
 - POST /v1/ip-calls/{id}/hangup: caller or callee terminates control state
 - POST /v1/ip-calls/{id}/media-token: participants get short-lived, microphone-only LiveKit room grants only AFTER acceptance
 
-One ringing/active call per actor per tenant. Ring timeout: 45 seconds. Max accepted call: 60 minutes. Duplicate origination with identical caller+key yields identical call. Different destination reusing that key fails closed. Call data and events live in a SQLite file; no real carrier or vendor call is placed.
+All participating accounts must be provisioned by a trusted operator. An AI agent can only ring an account whose agent-call consent flag is explicitly enabled. One ringing/active call per actor per tenant. Ring timeout: 45 seconds. Max accepted call: 60 minutes. Duplicate origination with identical caller+key yields identical call. Different destination reusing that key fails closed. Call data and events live in a SQLite file; no real carrier or vendor call is placed.
 
 ## Local source-only operation
 
@@ -44,6 +44,8 @@ Generate three distinct secret values; never commit them. Configure:
 
 Create role credentials LOCALLY, not through HTTP:
 
+    PYTHONPATH=src python -m porcelainberryme.ip_calls enroll --tenant demo --subject agent_01
+    PYTHONPATH=src python -m porcelainberryme.ip_calls enroll --tenant demo --subject user_01 --allow-agent-calls
     PYTHONPATH=src python -m porcelainberryme.ip_calls token --tenant demo --subject agent_01 --role agent
     PYTHONPATH=src python -m porcelainberryme.ip_calls token --tenant demo --subject user_01 --role human
 
@@ -56,7 +58,7 @@ The API binds ONLY to 127.0.0.1:8874 and is not accessible from remote browsers 
 - Accept/hangup updates the call-control state; it does NOT presently eject already connected participants from the LiveKit room. Add verified room teardown/revocation and recovery before exposing this externally.
 - Browser polling cannot ring a sleeping mobile handset. An independent consent-aware push and mobile client protocol is needed.
 - Rate limits, global concurrency ceilings, account enrolment, device authentication, event retention, explicit consent/DND policies, privacy audits, abuse prevention, host load tests and crash-recovery behavior are missing.
-- An offline test suite covers state transitions, tenant isolation, agent origination, JWT permissions, duplicate rejection, expiration and API handling. It does NOT establish a working PSTN call or live WebRTC audio.
+- An offline test suite covers state transitions, tenant isolation, explicit enrollment/agent-call opt-in, agent origination, JWT permissions, duplicate rejection, expiration and API handling. It does NOT establish a working PSTN call or live WebRTC audio.
 
 This is a first actual **internet call control implementation**, not a completed telephone provider, and must remain a feature branch until its production gates are satisfied.
 
