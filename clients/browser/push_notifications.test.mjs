@@ -188,7 +188,7 @@ test('service worker notification click opens same-origin PWA only', async () =>
   const url = new URL(h.opened[0]);
   assert.equal(url.origin, 'https://calls.example.test');
   assert.equal(url.searchParams.get('incoming_call'), id);
-  assert.equal(url.pathname, '/');
+  assert.equal(url.pathname, '/pwa/');
 
   let focused = false;
   let message = null;
