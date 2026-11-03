@@ -170,9 +170,18 @@ async def main():
             terminator = LiveKitRoomTerminator(
                 media_url, media_key, media_secret,
             )
-            result = registry.reconcile_media(terminator.delete_room)
-            if result["reviewed"] != 1:
-                raise RuntimeError("missing_media_teardown_reconciliation")
+            # Repeat cleanup until the last short-lived join token is
+            # expired, so a stale token cannot re-create the deleted room.
+            done = False
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline:
+                result = registry.reconcile_media(terminator.delete_room)
+                if result["completed"] == 1:
+                    done = True
+                    break
+                await asyncio.sleep(2.0)
+            if not done:
+                raise RuntimeError("media_teardown_not_confirmed")
 
 
 if __name__ == "__main__":
