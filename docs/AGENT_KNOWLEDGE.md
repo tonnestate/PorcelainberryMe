@@ -43,10 +43,10 @@ Use a private absolute SQLite path in an existing secure directory:
 
     export PB_AGENT_KNOWLEDGE_DB='/private/existing/agents.sqlite3'
 
-Create a profile. Unless --retain-unknown is explicitly set, no unanswered
+Create a profile with an independently configurable spoken greeting. Unless --retain-unknown is explicitly set, no unanswered
 call questions are kept on disk:
 
-    python -m porcelainberryme.agent_knowledge --db "$PB_AGENT_KNOWLEDGE_DB" configure --tenant company01 --assistant assistant01
+    python -m porcelainberryme.agent_knowledge --db "$PB_AGENT_KNOWLEDGE_DB" configure --tenant company01 --assistant assistant01 --greeting 'Guten Tag. Sie sprechen mit dem digitalen Empfang.'
 
 Submit a draft FAQ. The command returns its revision, initially 1:
 
@@ -77,6 +77,9 @@ Configure the PB_AGENT_KNOWLEDGE_DB environment variable of the existing
 PorcelainberryMe local voice worker. It validates that the private file
 and verified (tenant, agent_id) profile actually exist before dialing.
 The VoiceTurnEngine's responder is then an ApprovedKnowledgeResponder.
+The worker synthesizes the approved profile greeting as real PCM when the
+accepted call connects. If the recipient starts speaking during greeting
+synthesis, the stale greeting is dropped; barge-in clears outgoing audio.
 Only approved exact FAQ answers or the configured safe fallback reach Piper
 speech synthesis. There is no unapproved Ollama fallback when this mode
 is active, even if an Ollama model is installed. The local STT/Piper and
@@ -86,7 +89,8 @@ WebRTC media prerequisites from LOCAL_VOICE_AGENT.md still apply.
 system. Speech recognition punctuation and paraphrases can reduce exact
 matches. This feature closes an authorization/knowledge gap but does not
 prove customer-grade knowledge comprehension, semantic document search,
-automatic learning, a greeting/voice picker, scheduling or call transfer.
+automatic learning, conditional greeting rules or a voice picker,
+scheduling or call transfer.
 
 ## Tests and remaining release gates
 
