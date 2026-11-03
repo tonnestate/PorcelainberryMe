@@ -88,6 +88,8 @@ This is a first actual **internet call control implementation**, not a completed
 
 With LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET configured to a server under your control, PorcelainberryMe uses no additional cloud account or paid SDK for media cleanup. Its own server runs a dedicated bounded reconciliation thread. The LiveKit admin credential is kept server-side and is **never** returned to browser clients. The only elevated VideoGrant used by cleanup is roomCreate, required by DeleteRoom.
 
+Closed call records (including caller/callee IDs and idempotency data) now have an explicit `closed_at` timestamp. The default 30-day call-history retention expires completed records and their related event/media-journal rows, but **never** purges a call with unfinished LiveKit media teardown. Existing SQLite databases are migrated in place. Since old idempotency keys expire with their records, callers must not replay an authorization request after the retention period. This is the application data default, not a substitute for a customer retention agreement or GDPR assessment.
+
 The call API remains loopback-only. The HTTP response to hangup confirms the **call-control** transition, not that media has already been disconnected. The cleanup journal persists outstanding work in SQLite, with lease recovery and retries after process restart. Inspect server logs for ip_media_reconcile_error and monitor the database in staging before production.
 
 The implementation deliberately avoids assuming an ordinary phone number or an incoming PSTN trunk. Media cleanup does not confer carrier connectivity.

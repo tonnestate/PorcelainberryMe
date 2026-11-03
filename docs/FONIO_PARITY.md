@@ -30,7 +30,7 @@ Sources:
 | Incoming caller-specific context | Inbound webhook | Not implemented for independent customer calls | Authenticated tenant-bound context provider with timeout and data minimization |
 | Call accounting/concurrency | Plans and limits | Per-tenant hard cap of 40 simultaneous control sessions, AI-call 120s cooldown, per-user DND; no metering or billing | Tenant-configurable quotas, observed capacity, resource ceilings, billing |
 | Customer-facing SaaS | Self-service dashboard, team users | No complete customer UI/onboarding/payments | RBAC, portal, settings, subscriptions, audit |
-| Privacy and retention | Optional privacy controls | Call audio not persisted by voice engine; optional reviewed unknown-question inbox | Complete GDPR review, data subject rights, retention/consent proof |
+| Privacy and retention | Optional privacy controls | Call audio not persisted by voice engine; 30-day closed-call history pruning after confirmed media cleanup; optional unanswered-question inbox | Tenant-specific GDPR review, deletion rights, configurable retention and consent proof |
 
 ## Current concrete additions (2026-11-03)
 
