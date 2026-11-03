@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "porcelainberryme"
 version = "0.1.0"
-description = "Lightweight provider-neutral communication gateway for FruitStack"
+description = "Standalone headless multi-channel and Internet voice communications"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "Proprietary - all rights reserved"}
@@ -13,6 +13,10 @@ dependencies = []
 
 [project.optional-dependencies]
 sip = ["baresip-python==0.6.0"]
+# Optional open-source RTC and local speech recognition only; no model weights,
+# paid APIs or cloud accounts. Piper executable/models and Ollama are installed
+# separately by the operator only after hardware/capacity review.
+voice-local = ["livekit>=1.0,<2.0", "faster-whisper>=1.0,<2.0", "numpy>=1.24,<3.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

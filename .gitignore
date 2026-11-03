@@ -19,3 +19,8 @@ venv/
 *.safetensors
 models/
 secrets/
+
+# Locally generated self-hosted LiveKit YAML and credentials
+local-private/
+**/livekit-local.yaml
+**/local-media.env

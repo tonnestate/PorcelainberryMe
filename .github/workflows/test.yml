@@ -18,6 +18,9 @@ jobs:
       - name: Install project only
         run: python -m pip install -e .
       - name: Compile
-        run: python -m compileall -q src
+        run: python -m compileall -q src scripts
       - name: Run offline tests
         run: python -m unittest discover -s tests -v
+
+      - name: Run browser SDK offline tests (Node built-in runner)
+        run: node --test clients/browser/ip_calls_client.test.mjs
