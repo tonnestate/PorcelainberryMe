@@ -27,13 +27,13 @@ Bearer identity tokens are signed by a trusted backend with subject, tenant, rol
 - POST /v1/ip-calls/{id}/accept: callee accepts
 - POST /v1/ip-calls/{id}/decline: callee declines
 - POST /v1/ip-calls/{id}/hangup: caller or callee terminates control state
-- POST /v1/ip-calls/{id}/media-token: participants get short-lived, microphone-only LiveKit room grants only AFTER acceptance
+- POST /v1/ip-calls/{id}/media-token: participants get short-lived, microphone-only LiveKit room grants only AFTER acceptance and only if media is configured
 
 All participating accounts must be provisioned by a trusted operator. An AI agent can only ring an account whose agent-call consent flag is explicitly enabled. One ringing/active call per actor per tenant. Ring timeout: 45 seconds. Max accepted call: 60 minutes. Duplicate origination with identical caller+key yields identical call. Different destination reusing that key fails closed. Call data and events live in a SQLite file; no real carrier or vendor call is placed.
 
 ## Local source-only operation
 
-Generate three distinct secret values; never commit them. Configure:
+The control API can run without a media server. Configure the call identity and database first; only set the three LIVEKIT variables when a self-hosted media service is ready. Never commit credentials:
 
     export PB_CALL_IDENTITY_SECRET='replace-with-private-32-plus-character-identity-secret'
     export PB_CALL_DB='/private/absolute/path/ip_calls.sqlite'
@@ -49,7 +49,7 @@ Create role credentials LOCALLY, not through HTTP:
     PYTHONPATH=src python -m porcelainberryme.ip_calls token --tenant demo --subject agent_01 --role agent
     PYTHONPATH=src python -m porcelainberryme.ip_calls token --tenant demo --subject user_01 --role human
 
-The API binds ONLY to 127.0.0.1:8874 and is not accessible from remote browsers until a separately secured HTTPS reverse proxy is configured. LIVEKIT_URL specifies a separate independently operated instance: merely providing a URL does not start a media server.
+The API binds ONLY to 127.0.0.1:8874 and is not accessible from remote browsers until a separately secured HTTPS reverse proxy is configured. If LIVEKIT variables are unset, call setup and consent work but /media-token returns 503 media_backend_not_configured instead of inventing a functioning media server. LIVEKIT_URL specifies a separate independently operated instance: merely providing a URL does not start a media server.
 
 ## Production gating: do not misrepresent this branch
 
