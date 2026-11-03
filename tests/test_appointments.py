@@ -132,6 +132,26 @@ class AppointmentTests(unittest.TestCase):
                                  weekly={"0": [["09:00", "11:00"], ["10:00", "12:00"]]},
                                  duration_min=30)
 
+    def test_ics_export_contains_only_confirmed_utc_slots_and_no_caller_pii(self):
+        kept = self.store.book("tenantA", "agent", "private_person",
+                               "2026-11-09T14:00",
+                               idempotency_key="ics-booking-0001")
+        removed = self.store.book("tenantA", "agent", "other_person",
+                                  "2026-11-09T14:30",
+                                  idempotency_key="ics-booking-0002")
+        self.store.cancel("tenantA", "agent", "other_person", removed["id"])
+        feed = self.store.export_ics("tenantA", "agent")
+        self.assertIn("BEGIN:VCALENDAR\r\n", feed)
+        self.assertEqual(feed.count("BEGIN:VEVENT"), 1)
+        self.assertIn(f"UID:{kept['id']}@porcelainberryme.local", feed)
+        self.assertIn("DTSTART:20261109T130000Z", feed)
+        self.assertIn("DTEND:20261109T133000Z", feed)
+        self.assertNotIn("private_person", feed)
+        self.assertNotIn("other_person", feed)
+        self.assertNotIn(removed["id"], feed)
+        with self.assertRaisesRegex(AppointmentError, "not_configured"):
+            self.store.export_ics("tenantA", "unknown")
+
     def test_persists_after_restart_and_respects_slot_changes(self):
         appointment = self.store.book(
             "tenantA", "agent", "caller", "2026-11-09T09:00",
