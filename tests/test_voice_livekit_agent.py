@@ -168,6 +168,54 @@ class VoiceLiveKitTests(unittest.IsolatedAsyncioTestCase):
         speaker.interrupt()
         self.assertEqual(source.clears, 1)
 
+    async def test_hangup_during_slow_greeting_cancels_speech(self):
+        rtc = SimpleNamespace(**{k: getattr(FakeRTC, k) for k in (
+            "TrackKind", "TrackSource", "AudioFrame", "AudioSource",
+            "LocalAudioTrack", "TrackPublishOptions", "RoomOptions",
+            "AudioStream")})
+        rooms = []
+        class Room(FakeRTC.Room):
+            pass
+
+        def make_room():
+            room = Room()
+            rooms.append(room)
+            return room
+        rtc.Room = make_room
+
+        class EndingControl(FakeControl):
+            async def status(self, call_id):
+                await asyncio.sleep(0.02)
+                return {"state": "ENDED"}
+
+        class SlowTTS(FakeTTS):
+            def __init__(self):
+                super().__init__()
+                self.entered = asyncio.Event()
+                self.cancelled = False
+
+            async def synthesize(self, text):
+                self.entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+
+        tts = SlowTTS()
+        worker = LiveKitAgentCall(
+            client=EndingControl(), tenant="tenantA", callee="human1",
+            tts=tts, stt=FakeSTT(), llm=FakeLLM(), rtc=rtc,
+            greeting="Guten Tag, bitte hören Sie zu",
+        )
+        await asyncio.wait_for(worker.speak("b" * 32), timeout=1.0)
+        self.assertTrue(tts.entered.is_set())
+        self.assertTrue(tts.cancelled)
+        self.assertEqual(len(rooms), 1)
+        self.assertEqual(rooms[0].disconnect_count, 1)
+        self.assertTrue(worker._source.closed)
+        self.assertEqual(worker._source.frames, [])
+
     async def test_only_expected_remote_identity_is_subscribed(self):
         rtc = SimpleNamespace(**{k: getattr(FakeRTC, k) for k in (
             "TrackKind", "TrackSource", "AudioFrame", "AudioSource",

@@ -141,3 +141,29 @@ See the [Fonio feature-gap and release gates](docs/FONIO_PARITY.md).
 Offline tests are required but do not prove deployed speech, real PSTN
 reachability, a working iPhone background notification or commercial
 readiness.
+
+### Self-hosted appointments and autonomous-call safety
+
+A local, independent calendar service now manages explicitly configured
+appointment hours, time zones, daylight-saving-time ambiguity, available
+slots, atomic/deduplicated booking, caller-owned cancellation and
+privacy-preserving read-only iCalendar export. The existing German voice
+worker can propose a date and only **after a specific second spoken
+confirmation** book or cancel that caller's own slot. Unsupported speech
+formats fail closed rather than asking a general LLM to invent a reservation.
+No paid calendar account, new SaaS or phone carrier is required for this
+internal calendar; it is **not** Google/Outlook two-way synchronization.
+
+The IP calling control plane now enforces per-user Do Not Disturb, a
+120-second cooldown against repeated agent-originated calls to the same
+person, a 40-concurrent-session tenant safety ceiling, and bounded/aged
+event retention. The local LiveKit worker monitors hangup concurrently
+with the greeting, so slow local voice synthesis cannot outlive a call.
+
+Technical configuration, booking CLI and honest remaining limitations:
+[local calendar and voice booking](docs/APPOINTMENTS.md),
+[Fonio feature-parity gaps](docs/FONIO_PARITY.md), and
+[local WebRTC voice worker](docs/LOCAL_VOICE_AGENT.md).
+
+**Offline CI still does not prove a real live call, commercial-grade voice
+latency, iPhone push delivery or public telephone-network connectivity.**

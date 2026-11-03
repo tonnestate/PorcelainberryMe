@@ -85,6 +85,109 @@ class InternetCallsTest(unittest.TestCase):
         with self.assertRaisesRegex(CallError, "call_not_accepted"):
             self.store.media_credentials(self.agent, ringing["id"])
 
+    def test_do_not_disturb_blocks_agent_and_human_ringing(self):
+        self.store.set_do_not_disturb("tenant_a", "bob", True)
+        with self.assertRaisesRegex(CallError, "recipient_do_not_disturb"):
+            self._ring(self.agent)
+        with self.assertRaisesRegex(CallError, "recipient_do_not_disturb"):
+            self._ring(self.alice)
+        self.store.set_do_not_disturb("tenant_a", "bob", False)
+        self.assertEqual(self._ring(self.agent)["state"], "RINGING")
+        with self.assertRaisesRegex(CallError, "account_not_enrolled"):
+            self.store.set_do_not_disturb("tenant_a", "ghost", True)
+        with self.assertRaisesRegex(CallError, "invalid_dnd_preference"):
+            self.store.set_do_not_disturb("tenant_a", "bob", 1)
+
+    def test_ai_call_cooldown_persists_and_applies_across_other_agents(self):
+        first = self._ring(self.agent)
+        self.store.decide(self.bob, first["id"], "decline")
+        with self.assertRaisesRegex(CallError, "agent_call_cooldown"):
+            self._ring(self.agent, idem="second-agent-call-01")
+        self.store.provision("tenant_a", "assistant2")
+        other_agent = {"tenant": "tenant_a", "sub": "assistant2", "role": "agent"}
+        with self.assertRaisesRegex(CallError, "agent_call_cooldown"):
+            self._ring(other_agent, idem="other-agent-call-01")
+        # Replaying the original idempotency token does not ring again.
+        replay = self._ring(self.agent)
+        self.assertEqual(replay["id"], first["id"])
+        # Human calling is not subject to AI-originator cooldown.
+        human = self._ring(self.alice, idem="human-call-0001")
+        self.store.decide(self.bob, human["id"], "decline")
+        restarted = CallRegistry(
+            self.store.path, identity_secret=self.secret,
+            clock=lambda: self.tick[0],
+        )
+        with self.assertRaisesRegex(CallError, "agent_call_cooldown"):
+            restarted.originate(self.agent, "bob", "third-agent-call-01")
+        self.tick[0] += 121
+        self.assertEqual(
+            restarted.originate(self.agent, "bob", "third-agent-call-01")["state"],
+            "RINGING",
+        )
+
+    def test_tenant_call_capacity_prevents_oversubscription(self):
+        for index in range(40):
+            caller = f"loadcaller{index}"
+            callee = f"loadcallee{index}"
+            self.store.provision("tenant_a", caller)
+            self.store.provision("tenant_a", callee)
+            initiated = self.store.originate(
+                {"tenant": "tenant_a", "sub": caller, "role": "human"},
+                callee, f"capacity-call-{index:03d}",
+            )
+            self.assertEqual(initiated["state"], "RINGING")
+        self.store.provision("tenant_a", "extra_caller")
+        self.store.provision("tenant_a", "extra_callee")
+        with self.assertRaisesRegex(CallError, "tenant_call_capacity_exceeded"):
+            self.store.originate(
+                {"tenant": "tenant_a", "sub": "extra_caller", "role": "human"},
+                "extra_callee", "capacity-extra-call-01",
+            )
+        # A separate tenant is unaffected by the capacity of tenant_a.
+        self.store.provision("tenant_b", "another")
+        self.store.provision("tenant_b", "receiver")
+        self.assertEqual(
+            self.store.originate(
+                {"tenant": "tenant_b", "sub": "another", "role": "human"},
+                "receiver", "tenant-b-call-01",
+            )["state"], "RINGING",
+        )
+
+    def test_event_retention_discards_old_events_but_preserves_missed_result(self):
+        called = self._ring()
+        self.tick[0] += 31 * 86400
+        self.assertEqual(self.store.status(self.alice, called["id"])["state"],
+                         "TIMED_OUT")
+        events = self.store.inbox(self.bob)["events"]
+        self.assertEqual([event["kind"] for event in events], ["TIMED_OUT"])
+
+    def test_existing_database_is_migrated_without_losing_consent(self):
+        import sqlite3
+        legacy = str(Path(self.tmp.name) / "legacy.sqlite")
+        with sqlite3.connect(legacy) as con:
+            con.execute(
+                "CREATE TABLE ip_call_users ("
+                "tenant TEXT NOT NULL, subject TEXT NOT NULL,"
+                "agent_calls INTEGER NOT NULL DEFAULT 0,"
+                "PRIMARY KEY(tenant, subject))"
+            )
+            con.execute("INSERT INTO ip_call_users VALUES(?,?,?)",
+                        ("tenant_a", "bob", 1))
+        migrated = CallRegistry(legacy, identity_secret=self.secret,
+                                clock=lambda: self.tick[0])
+        with sqlite3.connect(legacy) as con:
+            row = con.execute(
+                "SELECT agent_calls, do_not_disturb FROM ip_call_users "
+                "WHERE tenant=? AND subject=?", ("tenant_a", "bob")
+            ).fetchone()
+        self.assertEqual(row, (1, 0))
+        migrated.set_do_not_disturb("tenant_a", "bob", True)
+        with sqlite3.connect(legacy) as con:
+            self.assertEqual(con.execute(
+                "SELECT do_not_disturb FROM ip_call_users "
+                "WHERE tenant='tenant_a' AND subject='bob'"
+            ).fetchone()[0], 1)
+
     def test_media_teardown_is_durable_and_repeated_until_token_expiration(self):
         created = self._ring(self.agent)
         self.store.decide(self.bob, created["id"], "accept")

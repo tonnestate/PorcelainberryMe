@@ -10,7 +10,7 @@ This is a VOIP/IP communications provider **within its own reachable Internet us
 
 ## Architectural decision: separate four responsibilities
 
-1. **Call control**: PorcelainberryMe owns authentication, tenant-scoped call invitations, agent origination, ringing, acceptance, rejection, hangup, timeouts and events; production rate limiting is still missing. The first bounded implementation is in src/porcelainberryme/ip_calls.py.
+1. **Call control**: PorcelainberryMe owns authentication, tenant-scoped call invitations, agent origination, ringing, acceptance, rejection, hangup, timeouts and events. Basic abuse gates now enforce 120-second AI-call recipient cooldown, local DND and a default 40-active-call tenant capacity ceiling. Fine-grained production account/IP rate limiting remains open. Source: src/porcelainberryme/ip_calls.py.
 2. **Media**: Self-hosted LiveKit (open-source Apache 2.0) is the donor for WebRTC media transport, secure rooms, participant audio and NAT/ICE connectivity. This repository mints a narrowly scoped LiveKit room token, but has NOT installed LiveKit or tested live audio. Unlike a proprietary provider, no LiveKit Cloud account is required.
 3. **Speech**: A separate, locally running voice worker must listen, use offline STT/LLM/TTS and publish natural speech in the same room. No provider, worker, model weights, streaming performance or acceptable voice quality have been verified or implemented for this path. Pipecat can be evaluated as the speech orchestration donor; it is NOT a second media-server requirement.
 4. **Client and notification**: An authenticated browser/mobile client displays incoming invites and joins the LiveKit room after human acceptance. The first API has authenticated cursor-based polling only; it cannot ring a suspended iOS app in the background. Native push/call UI requires separate platform work.
@@ -49,6 +49,11 @@ Create role credentials LOCALLY, not through HTTP:
     PYTHONPATH=src python -m porcelainberryme.ip_calls token --tenant demo --subject agent_01 --role agent
     PYTHONPATH=src python -m porcelainberryme.ip_calls token --tenant demo --subject user_01 --role human
 
+Use the trusted local CLI for DND (never issue this command from a public HTTP request):
+
+    PYTHONPATH=src python -m porcelainberryme.ip_calls dnd --tenant demo --subject user_01 --enabled
+    PYTHONPATH=src python -m porcelainberryme.ip_calls dnd --tenant demo --subject user_01 --disabled
+
 The API binds ONLY to 127.0.0.1:8874 and is not accessible from remote browsers until a separately secured HTTPS reverse proxy is configured. If LIVEKIT variables are unset, call setup and consent work but /media-token returns 503 media_backend_not_configured instead of inventing a functioning media server. LIVEKIT_URL specifies a separate independently operated instance: merely providing a URL does not start a media server.
 
 ## Optional browser adapter for a future end-user app
@@ -66,7 +71,7 @@ The code and Node built-in tests are source-level integration checks; no live au
 - **Implemented, offline-tested:** A durable LiveKit room-teardown outbox is queued on hangup and active-call timeout. The existing headless server starts a supervised 2-second reconciliation worker if self-hosted LiveKit is configured; it sends authenticated Twirp RoomService/DeleteRoom requests, which forcibly disconnect active participants. Failed requests are retried after persisted delays, including after process restart. LiveKit returns a typed not_found response when the room already does not exist; a generic HTTP 404 is never treated as success.
 - **Residual revocation window:** livekit-server can create a room again if a still-valid join token is presented. Media tokens now expire after at most 12 seconds; successful room deletion repeats every 2 seconds through expiry plus 5 seconds of clock allowance. Therefore an ended call is not guaranteed to become silent instantly, and no strong zero-millisecond revocation guarantee is claimed. Live media behavior, server connectivity and forced audio disconnection still require a real two-party end-to-end test on self-hosted infrastructure. The current endpoint returns call-control termination before remote media teardown is confirmed.
 - Browser polling cannot ring a sleeping mobile handset. An independent consent-aware push and mobile client protocol is needed.
-- Rate limits, global concurrency ceilings, account enrolment, device authentication, event retention, explicit consent/DND policies, privacy audits, abuse prevention, host load tests and crash-recovery behavior are missing.
+- Basic protection now exists: explicit agent-call consent, per-recipient DND, 120-second cooldown, default maximum 40 concurrent calls per tenant and per-recipient event caps (1,000 events, 30-day retention). Missing: authenticated public account management, configurable rate plans, per-IP/network rate limiting, device authorization, complete privacy rights and host-load acceptance.
 - The expanded offline tests cover state transitions, identity and tenant isolation, explicit enrollment/opt-in, AI-originated ringing, JWT issuance, token expiry, actual LiveKit Twirp protocol shape via an injected test HTTP adapter, durable teardown on hangup and timeout, retries after network failure, and reconciliation after database restart. It does NOT establish a working PSTN call or live WebRTC audio.
 
 This is a first actual **internet call control implementation**, not a completed telephone provider, and must remain a feature branch until its production gates are satisfied.

@@ -206,30 +206,40 @@ class LiveKitAgentCall:
             options = self.rtc.TrackPublishOptions()
             options.source = self.rtc.TrackSource.SOURCE_MICROPHONE
             await room.local_participant.publish_track(track, options)
-            # This is an actual audio greeting, not just a profile field.
-            # Remote audio is already subscribed, so human barge-in can
-            # cancel queued greeting playback through VoiceTurnEngine.
-            if not self._closed.is_set():
-                # Never play a delayed greeting after the callee has
-                # already started speaking while local TTS was running.
+            # Watch state *before* synthesizing the opening greeting.
+            # Otherwise slow local TTS could continue after a remote hangup.
+            watcher = asyncio.create_task(self._watch_call(call_id))
+            waiter = asyncio.create_task(self._closed.wait())
+
+            async def greet():
+                if self._closed.is_set():
+                    return
+                # A real audio greeting, not a profile placeholder. Incoming
+                # speech invalidates the pending greeting while TTS is busy.
                 greeting_epoch = self._engine._epoch
                 welcome_pcm = await self.tts.synthesize(self.greeting)
                 if (not self._closed.is_set()
                         and greeting_epoch == self._engine._epoch):
                     await speaker.play(welcome_pcm)
-            watcher = asyncio.create_task(self._watch_call(call_id))
-            waiter = asyncio.create_task(self._closed.wait())
+
+            greeting_task = asyncio.create_task(greet())
             try:
-                done, pending = await asyncio.wait(
-                    [watcher, waiter], return_when=asyncio.FIRST_COMPLETED,
-                )
-                for task in done:
-                    task.result()
+                pending = {watcher, waiter, greeting_task}
+                while pending:
+                    done, pending = await asyncio.wait(
+                        pending, return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in done:
+                        task.result()  # propagate actual transport errors
+                    if watcher in done or waiter in done:
+                        break
             finally:
-                for task in (watcher, waiter):
+                for task in (watcher, waiter, greeting_task):
                     if not task.done():
                         task.cancel()
-                await asyncio.gather(watcher, waiter, return_exceptions=True)
+                await asyncio.gather(
+                    watcher, waiter, greeting_task, return_exceptions=True
+                )
         finally:
             self._closed.set()
             if self._stream_task is not None:
@@ -262,6 +272,14 @@ async def call_human(*, target: str, tenant: str, control_token: str,
         llm = ApprovedKnowledgeResponder(approved_db, tenant, agent_id)
     else:
         llm = LocalOllamaResponder(ollama_model)
+    calendar_db = os.environ.get("PB_APPOINTMENT_DB", "").strip()
+    if calendar_db:
+        # Deterministic local calendar operations require explicit spoken
+        # confirmation. Unknown utterances use the existing safe responder.
+        from .appointments import AppointmentVoiceResponder
+        llm = AppointmentVoiceResponder(
+            calendar_db, tenant, agent_id, target, llm,
+        )
     tts = LocalPiperVoice(piper_binary, piper_model)
     client = CallControlClient(control_token)
     identity = await client.whoami()
