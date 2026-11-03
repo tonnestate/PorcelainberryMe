@@ -92,3 +92,34 @@ Technical donor references (source/licensing must be reviewed in the target depl
 - faster-whisper: https://github.com/SYSTRAN/faster-whisper
 - Ollama API: https://github.com/ollama/ollama/blob/main/docs/api.md
 - Piper CLI (local raw speech): https://github.com/rhasspy/piper
+
+## Real WebRTC media acceptance test (no paid service)
+
+The manual test in scripts/livekit_audio_smoke.py is NOT mocked: it joins
+two distinct authenticated RTC endpoints to an already running self-hosted
+LiveKit server. It creates and accepts a tenant-scoped AI call in a
+temporary SQLite database, sends synthetic PCM via the real media server,
+and requires at least five nonzero PCM frames at the other endpoint.
+The test also reconciles media termination through the join-token expiry.
+No public telephone number, microphone recording or paid API is used.
+
+The test is not automatically run in CI and has not been executed on the
+user VPS. Offline Python/Node CI passing is not proof of live audio.
+
+Provide an already running self-hosted LiveKit instance with private key
+and secret, on a capacity-tested machine. Then:
+
+    export LIVEKIT_URL='ws://127.0.0.1:7880'
+    export LIVEKIT_API_KEY='<self-hosted-key>'
+    export LIVEKIT_API_SECRET='<self-hosted-secret-at-least-32-characters>'
+    export PB_CALL_IDENTITY_SECRET='<different-private-secret-at-least-32-characters>'
+    PYTHONPATH=src python scripts/livekit_audio_smoke.py
+
+A successful output must include REAL_WEBRTC_PCM_RECEIVED and a count of
+nonzero received frames. Missing dependencies, zero audio, network errors
+and unconfirmed teardown are failures, never silently accepted.
+
+The default LiveKit --dev secret is too short for our required media signing
+secret, so the operator must configure strong private self-hosted credentials.
+References: https://docs.livekit.io/transport/self-hosting/local/
+and https://docs.livekit.io/transport/self-hosting/deployment/.
