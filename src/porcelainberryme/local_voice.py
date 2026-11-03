@@ -186,10 +186,11 @@ class LocalOllamaResponder:
         The endpoint is fixed to loopback, never a paid/cloud API.
         """
         def probe():
-            conn = http.client.HTTPConnection(
-                "127.0.0.1", 11434, timeout=min(self.timeout, 5),
-            )
+            conn = None
             try:
+                conn = http.client.HTTPConnection(
+                    "127.0.0.1", 11434, timeout=min(self.timeout, 5),
+                )
                 conn.request("GET", "/api/tags")
                 response = conn.getresponse()
                 data = response.read(65537)
@@ -213,7 +214,8 @@ class LocalOllamaResponder:
             except (OSError, http.client.HTTPException) as exc:
                 raise LocalVoiceUnavailable("local_ollama_unreachable") from exc
             finally:
-                conn.close()
+                if conn is not None:
+                    conn.close()
         await asyncio.to_thread(probe)
 
     async def respond(self, text: str, history: list[dict]) -> str:
