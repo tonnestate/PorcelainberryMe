@@ -116,3 +116,16 @@ identity tokens outside the host-provided memory session. The existing
 host application must provide authentication, bundled LiveKit media,
 routing and final visual design; source level integration is documented
 in BROWSER_CALL_CONSOLE.md. No native cellphone/PSTN features are claimed.
+
+
+## Incoming AI receptionist for an enrolled Internet identity
+
+The headless call-control server now supports an **opt-in operator-provisioned
+inbound AI receptionist** for human-originated Internet calls. The AI receives
+a verified tenant-scoped RINGING invitation, claims an exclusive expiring
+work lease, updates the session to ACTIVE and joins the same LiveKit room
+with fenced media credentials. If its process dies, a new worker may
+reclaim the call after lease expiry. The existing customer can hang up
+at any time; after verified employee handoff the customer/staff session
+continues without the AI. This is not an automated answering service for
+public mobile/fixed-line numbers. Setup: docs/INBOUND_AI_RECEPTION.md.
