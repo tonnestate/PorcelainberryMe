@@ -101,10 +101,16 @@ class CallNotesStore:
         return con
 
     def _prune(self, db):
-        db.execute(
+        return db.execute(
             "DELETE FROM pb_call_notes WHERE created_at<?",
             (int(self.clock()) - RETENTION_SECONDS,),
-        )
+        ).rowcount
+
+    def prune_expired(self) -> int:
+        """Trusted maintenance; may run hourly in the existing IP call server."""
+        with closing(self._conn()) as db:
+            with db:
+                return self._prune(db)
 
     def save(self, *, call_id: str, tenant: str, assistant: str,
              caller: str, note: str, excerpts: int) -> bool:
@@ -244,7 +250,7 @@ def main() -> None:
     )
     parser.add_argument("--db", required=True, help="Absolute private SQLite path")
     actions = parser.add_subparsers(dest="action", required=True)
-    for action in ("list", "delete-caller", "delete-call"):
+    for action in ("list", "delete-caller", "delete-call", "prune-expired"):
         cmd = actions.add_parser(action)
         cmd.add_argument("--tenant", required=True)
         cmd.add_argument("--assistant", required=True)
@@ -256,7 +262,9 @@ def main() -> None:
             cmd.add_argument("--call-id", required=True)
     args = parser.parse_args()
     store = CallNotesStore(args.db)
-    if args.action == "list":
+    if args.action == "prune-expired":
+        print("expired_deleted", store.prune_expired())
+    elif args.action == "list":
         for note in store.list_notes(args.tenant, args.assistant,
                                      caller=args.caller):
             print(json.dumps(note.__dict__, ensure_ascii=False))
