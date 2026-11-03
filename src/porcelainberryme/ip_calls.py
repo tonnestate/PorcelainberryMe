@@ -19,6 +19,7 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
+import threading
 import time
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
@@ -29,6 +30,9 @@ CALL_ID = re.compile(r"^[a-f0-9]{32}$")
 AUDIENCE = "porcelainberryme.ip-calls.v1"
 RING_SECONDS = 45
 MAX_CALL_SECONDS = 3600
+MEDIA_TOKEN_SECONDS = 12
+MEDIA_REVOKE_GRACE_SECONDS = 5
+MEDIA_CLEANUP_INTERVAL_SECONDS = 2
 MAX_BODY = 4096
 
 
@@ -160,6 +164,13 @@ class CallRegistry:
                 );
                 CREATE INDEX IF NOT EXISTS ip_call_inbox
                   ON ip_call_events(tenant, receiver, seq);
+                CREATE TABLE IF NOT EXISTS ip_media_teardown (
+                  call_id TEXT PRIMARY KEY, room TEXT NOT NULL,
+                  latest_token_exp INTEGER NOT NULL,
+                  next_attempt INTEGER NOT NULL DEFAULT -1,
+                  attempts INTEGER NOT NULL DEFAULT 0,
+                  completed INTEGER NOT NULL DEFAULT 0
+                );
             """)
 
     def _conn(self):
@@ -191,12 +202,22 @@ class CallRegistry:
             (call["id"], call["tenant"], receiver, kind, now),
         )
 
+    @staticmethod
+    def _queue_media_teardown(con, call, now):
+        if call["state"] == "ACTIVE":
+            con.execute(
+                "UPDATE ip_media_teardown SET next_attempt=?, completed=0 "
+                "WHERE call_id=? AND completed=0",
+                (now, call["id"]),
+            )
+
     def _transition_expired(self, con, now):
         rows = con.execute(
             "SELECT * FROM ip_calls WHERE state IN ('RINGING', 'ACTIVE') "
             "AND expires_at<=?", (now,)
         ).fetchall()
         for call in rows:
+            self._queue_media_teardown(con, call, now)
             con.execute("UPDATE ip_calls SET state='TIMED_OUT' WHERE id=?", (call["id"],))
             self._event(con, call, call["caller"], "TIMED_OUT", now)
             self._event(con, call, call["callee"], "TIMED_OUT", now)
@@ -318,6 +339,8 @@ class CallRegistry:
                 if call["state"] not in expected:
                     raise CallError("invalid_call_transition", 409)
                 expires_at = now + MAX_CALL_SECONDS if decision == "accept" else now
+                if decision == "hangup":
+                    self._queue_media_teardown(con, call, now)
                 con.execute("UPDATE ip_calls SET state=?, expires_at=? WHERE id=?",
                             (target, expires_at, call_id))
                 for user in (call["caller"], call["callee"]):
@@ -339,9 +362,20 @@ class CallRegistry:
                     (call_id + ":" + claims["tenant"] + ":" + claims["sub"]).encode()
                 ).hexdigest()[:24]
                 room = "pb_" + call_id
+                token_expires = min(now + MEDIA_TOKEN_SECONDS, call["expires_at"])
+                if token_expires <= now:
+                    raise CallError("call_not_accepted", 409)
+                # Remember the last valid media token. A subsequent hangup
+                # must delete the room and keep deleting through token expiry.
+                con.execute(
+                    "INSERT INTO ip_media_teardown(call_id,room,latest_token_exp) "
+                    "VALUES(?,?,?) ON CONFLICT(call_id) DO UPDATE SET "
+                    "latest_token_exp=MAX(latest_token_exp, excluded.latest_token_exp)",
+                    (call_id, room, token_expires),
+                )
                 jwt = _jwt({
                     "iss": self.media_key, "sub": participant,
-                    "iat": now, "nbf": now - 1, "exp": min(now + 60, call["expires_at"]),
+                    "iat": now, "nbf": now - 1, "exp": token_expires,
                     "video": {
                         "room": room, "roomJoin": True,
                         "canPublish": True, "canSubscribe": True,
@@ -351,7 +385,65 @@ class CallRegistry:
                 }, self.media_secret)
                 return {"url": self.media_url, "room": room,
                         "participant": participant, "token": jwt,
-                        "expires_at": min(now + 60, call["expires_at"])}
+                        "expires_at": token_expires}
+
+
+    def reconcile_media(self, delete_room, *, limit: int = 20) -> dict:
+        """Durable, bounded cleanup of ended or timed-out LiveKit rooms.
+
+        Network effects occur outside the SQLite transaction. The leased job
+        is retried on a crash, and even successful DeleteRoom is repeated
+        until every issued token has expired plus clock skew. A deleted room
+        could otherwise be re-created by a still-valid join token.
+        """
+        if not callable(delete_room):
+            raise ValueError("media_deleter_required")
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("invalid_media_batch_limit")
+        now = self._now()
+        with closing(self._open()) as con:
+            with con:
+                jobs = con.execute(
+                    "SELECT m.call_id, m.room, m.latest_token_exp, m.attempts "
+                    "FROM ip_media_teardown AS m JOIN ip_calls AS c ON c.id=m.call_id "
+                    "WHERE m.completed=0 AND m.next_attempt>=0 "
+                    "AND m.next_attempt<=? AND c.state IN ('ENDED', 'TIMED_OUT', 'DECLINED') "
+                    "ORDER BY m.next_attempt, m.call_id LIMIT ?",
+                    (now, limit),
+                ).fetchall()
+                for job in jobs:
+                    # Lease prevents two parallel reconciliation workers
+                    # from both deleting and writing contradictory results.
+                    con.execute(
+                        "UPDATE ip_media_teardown SET next_attempt=? WHERE call_id=?",
+                        (now + 30, job["call_id"]),
+                    )
+        completed = retried = 0
+        for job in jobs:
+            succeeded = False
+            try:
+                delete_room(job["room"])
+                succeeded = True
+            except Exception:
+                # Media is NOT confirmed disconnected. Keep a bounded
+                # exponential retry instead of declaring hangup complete.
+                pass
+            stamp = self._now()
+            with closing(self._conn()) as con:
+                with con:
+                    next_attempt = (stamp + MEDIA_CLEANUP_INTERVAL_SECONDS
+                                    if succeeded else stamp + min(30, 2 ** min(5, job["attempts"])))
+                    final = succeeded and stamp >= job["latest_token_exp"] + MEDIA_REVOKE_GRACE_SECONDS
+                    con.execute(
+                        "UPDATE ip_media_teardown SET attempts=attempts+1, "
+                        "next_attempt=?, completed=? WHERE call_id=?",
+                        (-1 if final else next_attempt, int(final), job["call_id"]),
+                    )
+            if final:
+                completed += 1
+            else:
+                retried += 1
+        return {"reviewed": len(jobs), "completed": completed, "retry_pending": retried}
 
 
 def make_handler(registry: CallRegistry):
