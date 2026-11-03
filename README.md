@@ -172,3 +172,8 @@ latency, iPhone push delivery or public telephone-network connectivity.**
 ### Approved business documents (source-level implementation)
 
 The existing approved agent knowledge database also supports trusted local Markdown/plain-text imports with document-revision approval, bounded paragraph extraction, conservative lexical retrieval, source attribution and a safe no-match fallback. Only reviewed text belonging to the current tenant/assistant can be spoken. This is **not** semantic search or automatic website ingestion. See [document knowledge](docs/DOCUMENT_KNOWLEDGE.md) and [Fonio capability gaps](docs/FONIO_PARITY.md). No paid API or new service is required.
+
+
+### Consent-gated local post-call notes
+
+The existing self-hosted voice worker can store short, deterministic caller-request notes **only after explicit spoken opt-in in that call**. Revocation before hangup cancels note storage; no audio or full transcript is persisted by this feature. Notes contain up to four short post-consent user excerpts and expire after 14 days (hourly cleanup by the existing call server). No cloud summarizer or paid API. Setup and limitations: [post-call notes](docs/POST_CALL_NOTES.md). This is not an AI-generated summary or email/CRM automation.
