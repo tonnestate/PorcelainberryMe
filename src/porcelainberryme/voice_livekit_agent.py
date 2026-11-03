@@ -68,6 +68,17 @@ class CallControlClient:
     async def media_token(self, call_id: str):
         return await self.request("POST", "/v1/ip-calls/" + call_id + "/media-token")
 
+    async def offer_handoff(self, call_id: str, idem: str):
+        return await self.request("POST", "/v1/ip-calls/" + call_id + "/handoff",
+                                  {"idempotency_key": idem})
+
+    async def change_handoff(self, call_id: str, action: str):
+        if action not in ("cancel", "complete"):
+            raise ValueError("agent_handoff_action_not_permitted")
+        return await self.request(
+            "POST", "/v1/ip-calls/" + call_id + "/handoff/" + action,
+        )
+
     async def hangup(self, call_id: str):
         return await self.request("POST", "/v1/ip-calls/" + call_id + "/hangup")
 
@@ -122,6 +133,7 @@ class LiveKitAgentCall:
         self.tts, self.stt, self.llm, self.rtc = tts, stt, llm, rtc
         self.room = None
         self._stream_task = None
+        self._handoff_tasks = set()
         self._closed = asyncio.Event()
         self._engine = None
         self._source = None
@@ -163,10 +175,32 @@ class LiveKitAgentCall:
     async def _watch_call(self, call_id):
         while not self._closed.is_set():
             status = await self.client.status(call_id)
-            if status["state"] != "ACTIVE":
+            if (status["state"] != "ACTIVE"
+                    or (status.get("handoff") or {}).get("state") == "CONNECTED"):
+                # Staff has joined the *same* room; the AI leaves without
+                # hanging up or closing the human-to-human media session.
                 self._closed.set()
                 return
             await asyncio.sleep(1.0)
+
+    async def _complete_handoff_on_staff_track(self, call_id, remote_identity):
+        # The SDK reports the actual remote audio track. Never trust a
+        # customer-provided 'transfer complete' HTTP or model assertion.
+        try:
+            status = await self.client.status(call_id)
+            handoff = status.get("handoff") or {}
+            target = handoff.get("target")
+            if (handoff.get("state") != "ACCEPTED"
+                    or not isinstance(target, str)
+                    or remote_identity != self.participant_identity(
+                        call_id, self.tenant, target,
+                    )):
+                return
+            await self.client.change_handoff(call_id, "complete")
+        except Exception:
+            # A failed receipt never becomes a successful handoff. The
+            # originator stays connected while staff/retry status resolves.
+            return
 
     async def speak(self, call_id):
         media = await self.client.media_token(call_id)
@@ -189,10 +223,23 @@ class LiveKitAgentCall:
 
         @room.on("track_subscribed")
         def track_subscribed(track, publication, participant):
-            if (track.kind == self.rtc.TrackKind.KIND_AUDIO
-                    and participant.identity == self._expected_participant
-                    and self._stream_task is None):
-                self._stream_task = asyncio.create_task(self._consume_audio(track))
+            if track.kind != self.rtc.TrackKind.KIND_AUDIO:
+                return
+            if participant.identity == self._expected_participant:
+                if self._stream_task is None:
+                    self._stream_task = asyncio.create_task(
+                        self._consume_audio(track),
+                    )
+            else:
+                # The correct staff microphone has to be observable on the
+                # actual RTC connection before we relinquish this call.
+                task = asyncio.create_task(
+                    self._complete_handoff_on_staff_track(
+                        call_id, participant.identity,
+                    )
+                )
+                self._handoff_tasks.add(task)
+                task.add_done_callback(self._handoff_tasks.discard)
 
         @room.on("disconnected")
         def room_disconnected(*args):
@@ -248,6 +295,10 @@ class LiveKitAgentCall:
             if self._stream_task is not None:
                 self._stream_task.cancel()
                 await asyncio.gather(self._stream_task, return_exceptions=True)
+            for handoff_task in tuple(self._handoff_tasks):
+                handoff_task.cancel()
+            if self._handoff_tasks:
+                await asyncio.gather(*self._handoff_tasks, return_exceptions=True)
             # Freeze completed, heard turns before VoiceTurnEngine.close()
             # clears its in-memory history. Persist only with explicit
             # per-call user opt-in; transport teardown always takes priority.
@@ -304,6 +355,11 @@ async def call_human(*, target: str, tenant: str, control_token: str,
         )
     tts = LocalPiperVoice(piper_binary, piper_model)
     client = CallControlClient(control_token)
+    if os.environ.get("PB_ENABLE_STAFF_HANDOFF", "").strip() == "1":
+        # The operator must additionally provision the staff route through
+        # the trusted local CLI. No LLM-selected destination is allowed.
+        from .voice_handoff import HumanHandoffResponder
+        llm = HumanHandoffResponder(llm, client)
     identity = await client.whoami()
     if (identity.get("role") != "agent"
             or identity.get("tenant") != tenant
@@ -311,6 +367,9 @@ async def call_human(*, target: str, tenant: str, control_token: str,
         raise PermissionError("verified_voice_agent_identity_mismatch")
     call = await client.originate(target, request_id)
     call_id = call["id"]
+    bind_handoff = getattr(llm, "set_call_id", None)
+    if bind_handoff is not None:
+        bind_handoff(call_id)
     if not call["agent_initiated"]:
         raise RuntimeError("non_agent_identity_cannot_originate_agent_call")
     try:
@@ -332,7 +391,8 @@ async def call_human(*, target: str, tenant: str, control_token: str,
         # retried by this worker, and cleanup stays in PorcelainberryMe.
         try:
             status = await client.status(call_id)
-            if status["state"] in ("RINGING", "ACTIVE"):
+            if (status["state"] in ("RINGING", "ACTIVE")
+                    and (status.get("handoff") or {}).get("state") != "CONNECTED"):
                 await client.hangup(call_id)
         except Exception:
             # Caller cannot claim a successful network hangup here.
