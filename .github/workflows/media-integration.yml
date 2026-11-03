@@ -8,6 +8,9 @@ on:
       - '.github/workflows/media-integration.yml'
       - 'scripts/livekit_audio_smoke.py'
       - 'scripts/voice_agent_network_smoke.py'
+      - 'scripts/handoff_network_smoke.py'
+      - 'src/porcelainberryme/ip_handoff.py'
+      - 'src/porcelainberryme/voice_handoff.py'
       - 'scripts/generate_local_livekit_config.py'
       - 'src/porcelainberryme/ip_calls.py'
       - 'src/porcelainberryme/media_cleanup.py'
@@ -67,6 +70,13 @@ jobs:
           source "$RUNNER_TEMP/pb-local-media/local-media.env"
           set +a
           PYTHONPATH=src python scripts/voice_agent_network_smoke.py
+      - name: Verify real same-room employee handoff after AI departure
+        shell: bash
+        run: |
+          set -a
+          source "$RUNNER_TEMP/pb-local-media/local-media.env"
+          set +a
+          PYTHONPATH=src python scripts/handoff_network_smoke.py
       - name: Diagnose and remove local LiveKit test container
         if: always()
         run: |
