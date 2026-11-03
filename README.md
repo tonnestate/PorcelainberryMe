@@ -183,3 +183,8 @@ The existing self-hosted voice worker can store short, deterministic caller-requ
 ### Autonomous human handoff (real RTC integration verified)
 
 An operator may configure one approved employee per tenant/assistant. After an explicit customer spoken request, the AI offers a warm handoff. Staff must accept; their microphone must be observed in the **same** self-hosted LiveKit room before the AI disconnects. The staff/customer call continues without the AI. Declines, expiry, busy/DND and cancelled staff media tokens are handled with a durable, bounded removal journal. A real three-peer LiveKit CI test has passed without PSTN or a paid API. This is **not** a public-number/SIP carrier transfer or finished mobile phone service. See [staff handoff](docs/STAFF_HANDOFF.md) and [real-media evidence](docs/REAL_MEDIA_EVIDENCE.md).
+
+
+### Optional Web Push for installed first-party PWAs
+
+A new opt-in Web Push path queues incoming Internet call/staff handoff alerts durably in the existing SQLite call registry and delivers VAPID-signed, encrypted notifications to a user's enrolled first-party browser devices. The PWA service worker displays a visible alert and opens the same-origin app for explicit accept/decline. No paid notification vendor, telephone carrier or automatic microphone access is required. Apple Home Screen web apps can receive Web Push from iOS 16.4, but **neither reliable live iPhone delivery nor native CallKit ringing has been demonstrated**. See [PWA Web Push](docs/WEB_PUSH_CALLS.md).
