@@ -436,6 +436,56 @@ class LiveKitTwirpTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             endpoint.delete_room("room-attacker")
 
+    def test_remove_participant_is_scoped_to_room_and_staff_identity(self):
+        requests = []
+
+        def accepted(request, timeout):
+            self.assertEqual(timeout, 3)
+            self.assertTrue(request.full_url.endswith(
+                "/twirp/livekit.RoomService/RemoveParticipant",
+            ))
+            requests.append(request)
+            self.assertEqual(json.loads(request.data), {
+                "room": "pb_" + "a" * 32,
+                "identity": "ip_" + "b" * 24,
+            })
+            claims = json.loads(base64.urlsafe_b64decode(
+                request.get_header("Authorization").split(".")[1] + "==",
+            ))
+            self.assertEqual(claims["video"], {
+                "roomAdmin": True, "room": "pb_" + "a" * 32,
+            })
+            class Response(BytesIO):
+                status = 200
+            return Response(b"{}")
+
+        terminator = LiveKitRoomTerminator(
+            "ws://127.0.0.1:7880", "local-test-key", self.secret,
+            http_open=accepted, clock=lambda: self.time,
+        )
+        terminator.remove_participant("pb_" + "a" * 32, "ip_" + "b" * 24)
+        self.assertEqual(len(requests), 1)
+        with self.assertRaisesRegex(ValueError, "invalid_managed"):
+            terminator.remove_participant("other_room", "ip_" + "b" * 24)
+        with self.assertRaisesRegex(ValueError, "invalid_managed"):
+            terminator.remove_participant("pb_" + "a" * 32, "user_payload")
+
+    def test_staff_remove_typed_missing_is_acknowledged_but_proxy_404_fails(self):
+        def typed_missing(request, timeout):
+            raise HTTPError(request.full_url, 404, "Not Found", {},
+                            BytesIO(b'{"code":"not_found","msg":"no participant"}'))
+
+        terminator = LiveKitRoomTerminator(
+            "ws://127.0.0.1:7880", "local-test-key", self.secret,
+            http_open=typed_missing,
+        )
+        terminator.remove_participant("pb_" + "a" * 32, "ip_" + "b" * 24)
+        terminator.http_open = lambda req, timeout: (_ for _ in ()).throw(
+            HTTPError(req.full_url, 404, "Not Found", {}, BytesIO(b"<html>bad proxy</html>"))
+        )
+        with self.assertRaises(MediaTeardownError):
+            terminator.remove_participant("pb_" + "a" * 32, "ip_" + "b" * 24)
+
     def test_not_found_must_be_typed_twirp_error(self):
         def missing(_request, timeout):
             raise HTTPError(
