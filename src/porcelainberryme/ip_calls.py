@@ -141,6 +141,11 @@ class CallRegistry:
                   idem TEXT NOT NULL,
                   UNIQUE(tenant, caller, idem)
                 );
+                CREATE TABLE IF NOT EXISTS ip_call_users (
+                  tenant TEXT NOT NULL, subject TEXT NOT NULL,
+                  agent_calls INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY(tenant, subject)
+                );
                 CREATE TABLE IF NOT EXISTS ip_call_events (
                   seq INTEGER PRIMARY KEY AUTOINCREMENT,
                   call_id TEXT NOT NULL, tenant TEXT NOT NULL,
@@ -155,6 +160,20 @@ class CallRegistry:
         con = sqlite3.connect(self.path, timeout=20)
         con.row_factory = sqlite3.Row
         return con
+
+    def provision(self, tenant: str, subject: str, *, allow_agent_calls: bool = False):
+        """Trusted local provisioning only; never made available as HTTP."""
+        _identity(tenant)
+        _identity(subject)
+        if type(allow_agent_calls) is not bool:
+            raise CallError("invalid_agent_consent")
+        with closing(self._conn()) as con:
+            with con:
+                con.execute(
+                    "INSERT INTO ip_call_users(tenant, subject, agent_calls) VALUES(?,?,?) "
+                    "ON CONFLICT(tenant,subject) DO UPDATE SET agent_calls=excluded.agent_calls",
+                    (tenant, subject, int(allow_agent_calls)),
+                )
 
     def _now(self):
         return int(self.clock())
@@ -222,6 +241,18 @@ class CallRegistry:
                     if prior["callee"] != callee or prior["agent"] != int(claims["role"] == "agent"):
                         raise CallError("idempotency_conflict", 409)
                     return self._visible(prior, caller)
+                users = {
+                    row["subject"]: row["agent_calls"]
+                    for row in con.execute(
+                        "SELECT subject, agent_calls FROM ip_call_users "
+                        "WHERE tenant=? AND subject IN (?,?)",
+                        (tenant, caller, callee),
+                    )
+                }
+                if caller not in users or callee not in users:
+                    raise CallError("account_not_enrolled", 403)
+                if claims["role"] == "agent" and not users[callee]:
+                    raise CallError("agent_call_not_opted_in", 403)
                 busy = con.execute(
                     "SELECT 1 FROM ip_calls WHERE tenant=? "
                     "AND state IN ('RINGING', 'ACTIVE') "
@@ -398,6 +429,10 @@ def main():
     token.add_argument("--tenant", required=True)
     token.add_argument("--subject", required=True)
     token.add_argument("--role", choices=["human", "agent"], required=True)
+    enroll = sub.add_parser("enroll", help="Local trusted enrollment/agent-call consent")
+    enroll.add_argument("--tenant", required=True)
+    enroll.add_argument("--subject", required=True)
+    enroll.add_argument("--allow-agent-calls", action="store_true")
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=8874)
     args = parser.parse_args()
@@ -417,6 +452,9 @@ def main():
         media_secret=os.environ.get("LIVEKIT_API_SECRET", ""),
         media_url=os.environ.get("LIVEKIT_URL", ""),
     )
+    if args.cmd == "enroll":
+        registry.provision(args.tenant, args.subject, allow_agent_calls=args.allow_agent_calls)
+        return
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(registry))
     try:
         server.serve_forever()
