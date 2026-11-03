@@ -91,6 +91,9 @@ export class CallConsoleController {
         'message', this._onPushMessage,
       );
     }
+    // Calls must remain reachable even when service-worker installation or
+    // browser push configuration is slow or unavailable.
+    this.client.startPolling(1200);
     // Prepare registration and VAPID key outside a click. Never request
     // notification permission here, even on supported iPhones.
     if (this.identity.role === 'human' && this.serviceWorkerContainer?.register) {
@@ -109,7 +112,6 @@ export class CallConsoleController {
         this._update({ pushAvailable: false });
       }
     }
-    this.client.startPolling(1200);
     const id = new URLSearchParams(this.location?.search || '')
       .get('incoming_call');
     if (id && CALL_ID.test(id)) {
