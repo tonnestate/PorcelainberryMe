@@ -1,11 +1,15 @@
 """Agent-originated call orchestration contract: no real network or model imports."""
 import asyncio
+import os
+from pathlib import Path
+import tempfile
 import sys
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from porcelainberryme.voice_livekit_agent import call_human
+from porcelainberryme.agent_knowledge import KnowledgeStore, ApprovedKnowledgeResponder
 
 
 class OutboundAgentTests(unittest.IsolatedAsyncioTestCase):
@@ -60,6 +64,76 @@ class OutboundAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("originate", "humanA", "approved-call-01"), logs)
         self.assertIn(("voice", "a" * 32), logs)
         self.assertIn(("hangup", "a" * 32), logs)
+
+    async def test_approved_knowledge_is_used_in_the_real_voice_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "knowledge.sqlite")
+            store = KnowledgeStore(path)
+            store.configure("tenantA", "agentA")
+            store.propose(
+                "tenantA", "agentA", key="opening",
+                question="Wann ist geöffnet?", answer="Von neun bis fünf.",
+            )
+            store.review(
+                "tenantA", "agentA", key="opening",
+                expected_revision=1, approve=True,
+            )
+            observed = []
+            media_module = ModuleType("livekit")
+            media_module.rtc = SimpleNamespace()
+
+            class Control:
+                def __init__(self, token):
+                    pass
+
+                async def whoami(self):
+                    return {"role": "agent", "tenant": "tenantA", "subject": "agentA"}
+
+                async def originate(self, target, request_id):
+                    observed.append(("dial", target))
+                    return {"id": "f" * 32, "agent_initiated": True}
+
+                async def status(self, call_id):
+                    return {"state": "ACTIVE"}
+
+                async def hangup(self, call_id):
+                    observed.append(("hangup", call_id))
+
+            class Session:
+                def __init__(self, **kwargs):
+                    self.llm = kwargs["llm"]
+                    observed.append(("llm_type", type(self.llm).__name__))
+
+                async def speak(self, call_id):
+                    observed.append(("approved_answer", await self.llm.respond(
+                        "Wann ist geöffnet?", [],
+                    )))
+                    observed.append(("unapproved_answer", await self.llm.respond(
+                        "Was kostet es?", [],
+                    )))
+
+            with patch.dict(sys.modules, {"livekit": media_module}), \
+                 patch.dict(os.environ, {"PB_AGENT_KNOWLEDGE_DB": path}), \
+                 patch("porcelainberryme.voice_livekit_agent.LocalFasterWhisper",
+                       return_value=object()), \
+                 patch("porcelainberryme.voice_livekit_agent.LocalPiperVoice",
+                       return_value=object()), \
+                 patch("porcelainberryme.voice_livekit_agent.LocalOllamaResponder",
+                       side_effect=AssertionError("unknown facts must not use LLM")), \
+                 patch("porcelainberryme.voice_livekit_agent.CallControlClient", Control), \
+                 patch("porcelainberryme.voice_livekit_agent.LiveKitAgentCall", Session):
+                await call_human(
+                    target="humanA", tenant="tenantA", agent_id="agentA",
+                    control_token="valid-token", request_id="approved-call-02",
+                    whisper_model="/existing-whisper", ollama_model="",
+                    piper_binary="/existing-piper", piper_model="/existing-voice",
+                )
+            self.assertIn(("dial", "humanA"), observed)
+            self.assertIn(("llm_type", "ApprovedKnowledgeResponder"), observed)
+            self.assertIn(("approved_answer", "Von neun bis fünf."), observed)
+            self.assertIn(("unapproved_answer",
+                           "Dazu habe ich keine freigegebene Information. "
+                           "Bitte wende dich an das zuständige Team."), observed)
 
     async def test_user_issued_token_cannot_run_as_agent(self):
         logs = []
