@@ -64,6 +64,22 @@ Initiate the call **only after verifying the recipient's permission**:
 
 The worker fails closed if the model directory/executable/voice model is absent or if the authenticated agent identity differs from the supplied subject or tenant. It does not silently substitute an external vendor.
 
+## Startup readiness and failure handling
+
+For a general-purpose local Ollama voice agent, the worker queries the
+existing loopback-only GET /api/tags endpoint before sending any outgoing
+call invitation. The selected model must be listed as already installed.
+Missing, offline or malformed local model registries fail closed; no
+automatic model download, vendor API fallback or silent ringing is allowed.
+Trusted pre-approved FAQ-only mode does not require a general-purpose
+Ollama model. STT and Piper must still be locally available.
+
+If local STT, dialogue or TTS repeatedly fails during an accepted call,
+the voice engine signals the LiveKit session as unavailable after two
+consecutive failed turns, disconnects, and lets the existing call-control
+cleanup perform hangup and room revocation. A successful intervening
+spoken turn resets that failure counter. This avoids indefinitely silent
+connected sessions but is not a high-availability failover mechanism.
 ## Safety and operational gates before customer rollout
 
 - **Real audio test**: incoming human microphone captured, German STT recognized correctly, local LLM reply coherent, Piper speech received at the human device, interruption audio stops and room teardown completes. Measure first audio latency and percentiles under CPU load. Test multiple network topologies.
