@@ -25,7 +25,7 @@ Sources:
 | Conditional call opening | Yes | NEW: per-assistant spoken greeting at call start; conditional start-rules absent | Per-agent condition engine and real listening test |
 | Calendar/appointment actions | Yes | NEW: local calendar availability, concurrency-safe confirmed voice bookings, own-booking cancellation and ICS export; no external calendar sync or rescheduling | Real provider calendar adapters, reminders, team booking, flexible speech dates and end-to-end validation |
 | Live handoff to a person | Yes | Ending an IP call works; verified transfer/handoff not implemented | Consent-aware transfer + agent context handoff |
-| Conversation summary/transcript | Yes | Transient in-memory speech history; no authorized workflow summary | Consent, retention, extraction and delivery receipts |
+| Conversation summary/transcript | Yes | NEW: per-call opt-in short post-consent user excerpts stored locally with 14-day TTL; no recording, complete transcript or AI summary | Real consent UX, structured extraction, verified local summarization, delivery receipts and external notifications |
 | CRM/data integrations | 30+ claimed | Some standalone adapters and owner integrations, not generic audited customer tool execution | Per-tenant scoped tools, webhooks, CRM/approval workflow |
 | Incoming caller-specific context | Inbound webhook | Not implemented for independent customer calls | Authenticated tenant-bound context provider with timeout and data minimization |
 | Call accounting/concurrency | Plans and limits | Per-tenant hard cap of 40 simultaneous control sessions, AI-call 120s cooldown, per-user DND; no metering or billing | Tenant-configurable quotas, observed capacity, resource ceilings, billing |
@@ -86,3 +86,8 @@ Do not mark any feature production-ready solely because offline CI passes.
 ## Reviewed documents milestone
 
 Reviewable UTF-8 TXT/Markdown paragraphs, document revision approvals, source-title provenance, tenant isolation and fail-closed ambiguity checks are implemented through docs/DOCUMENT_KNOWLEDGE.md. They are integrated into the existing autonomous voice responder, but no website/PDF ingestion or semantic citations are claimed.
+
+
+## Opt-in follow-up notes milestone
+
+The voice agent now supports call-scoped spoken consent/revocation and a bounded, local SQLite note of user utterances spoken after consent. It does not claim Fonio's full call transcription, AI summaries, email or CRM workflow. The existing IP-call server can prune expired notes hourly without a new daemon or paid provider. Details: docs/POST_CALL_NOTES.md.
