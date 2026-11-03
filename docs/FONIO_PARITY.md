@@ -22,7 +22,7 @@ Sources:
 | Many voices/languages | 120+ voices, 60+ languages listed | One explicitly installed local Piper voice; German local STT setting | Model inventory, licenses, pronunciation, tests |
 | Configurable assistants | Unlimited assistants listed | Basic per-tenant agent identity and now reviewed FAQ profile; no customer portal | Secure self-service enrollment, greeting, workflow, permissions |
 | Business website/docs knowledge | Website content, self-learning knowledge and approvals | NEW: manually reviewed, exact-question FAQ, no scraping or semantic RAG | Document ingestion, provenance, semantic retrieval, review inbox |
-| Conditional call opening | Yes | No configurable greeting/start-rule engine | Per-agent rule engine and live evaluation |
+| Conditional call opening | Yes | NEW: per-assistant spoken greeting at call start; conditional start-rules absent | Per-agent condition engine and real listening test |
 | Calendar/appointment actions | Yes | Not implemented | Availability/read/book/change/cancel with atomic approval/receipts |
 | Live handoff to a person | Yes | Ending an IP call works; verified transfer/handoff not implemented | Consent-aware transfer + agent context handoff |
 | Conversation summary/transcript | Yes | Transient in-memory speech history; no authorized workflow summary | Consent, retention, extraction and delivery receipts |
@@ -35,7 +35,7 @@ Sources:
 ## Actual new capability (this milestone)
 
 See docs/AGENT_KNOWLEDGE.md. PorcelainberryMe now contains a local
-reviewed FAQ system with explicit human approval, revision-invalidating
+reviewed FAQ system with explicit human approval, a spoken greeting, revision-invalidating
 edits, tenant/assistant isolation, on-demand disabling, safe unknown-answer
 fallback and opt-in question inbox with bounded retention. The autonomous
 WebRTC voice worker actually selects that responder when configured.
