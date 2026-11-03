@@ -69,6 +69,28 @@ export class IPCallClient {
     return this.request('POST', '/v1/ip-calls/' + encodeURIComponent(callId) + '/decline');
   }
 
+  /**
+   * A staff member explicitly accepts the AI's warm-transfer offer. Only
+   * after acceptance may connect(callId) obtain a same-room media token.
+   * The originating agent remains connected until its own RTC handler
+   * observes this staff microphone and acknowledges the transfer.
+   */
+  async acceptHandoff(callId) {
+    const handoff = await this.request(
+      'POST', '/v1/ip-calls/' + encodeURIComponent(callId) + '/handoff/accept'
+    );
+    if (handoff.state !== 'ACCEPTED' && handoff.state !== 'CONNECTED') {
+      throw new Error('handoff_not_accepted');
+    }
+    return handoff;
+  }
+
+  declineHandoff(callId) {
+    return this.request(
+      'POST', '/v1/ip-calls/' + encodeURIComponent(callId) + '/handoff/decline'
+    );
+  }
+
   async hangup(callId) {
     try {
       return await this.request('POST', '/v1/ip-calls/' + encodeURIComponent(callId) + '/hangup');
