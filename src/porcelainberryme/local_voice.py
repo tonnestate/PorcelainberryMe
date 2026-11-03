@@ -17,7 +17,7 @@ import shutil
 import struct
 import subprocess
 import time
-from typing import Protocol
+from typing import Callable, Protocol
 
 
 SAMPLE_RATE = 16000
@@ -179,6 +179,45 @@ class LocalOllamaResponder:
         self.system = system
         self.timeout = timeout
 
+    async def preflight(self) -> None:
+        """Reject missing local models before dialing any recipient.
+
+        Ollama's local model listing is checked without pulling a model.
+        The endpoint is fixed to loopback, never a paid/cloud API.
+        """
+        def probe():
+            conn = None
+            try:
+                conn = http.client.HTTPConnection(
+                    "127.0.0.1", 11434, timeout=min(self.timeout, 5),
+                )
+                conn.request("GET", "/api/tags")
+                response = conn.getresponse()
+                data = response.read(65537)
+                if response.status != 200 or len(data) > 65536:
+                    raise LocalVoiceUnavailable("local_ollama_registry_unavailable")
+                try:
+                    registry = json.loads(data)
+                    models = registry["models"]
+                    if not isinstance(models, list):
+                        raise ValueError("invalid_models_array")
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise LocalVoiceUnavailable("local_ollama_registry_invalid") from exc
+                installed = {
+                    identifier
+                    for item in models if isinstance(item, dict)
+                    for identifier in (item.get("name"), item.get("model"))
+                    if isinstance(identifier, str)
+                }
+                if self.model not in installed:
+                    raise LocalVoiceUnavailable("local_ollama_model_not_installed")
+            except (OSError, http.client.HTTPException) as exc:
+                raise LocalVoiceUnavailable("local_ollama_unreachable") from exc
+            finally:
+                if conn is not None:
+                    conn.close()
+        await asyncio.to_thread(probe)
+
     async def respond(self, text: str, history: list[dict]) -> str:
         if not 1 <= len(text.strip()) <= 1200:
             raise ValueError("invalid_transcribed_text")
@@ -270,7 +309,8 @@ class VoiceTurnEngine:
     """
 
     def __init__(self, stt: Transcriber, llm: Responder, tts: Synthesizer,
-                 speaker: Speaker, *, threshold: int = 600):
+                 speaker: Speaker, *, threshold: int = 600,
+                 on_unavailable: Callable[[], None] | None = None):
         self.detector = EnergyTurnDetector(threshold=threshold)
         self.stt, self.llm, self.tts, self.speaker = stt, llm, tts, speaker
         self.history: list[dict] = []
@@ -280,6 +320,8 @@ class VoiceTurnEngine:
         self._closed = False
         self.turns_completed = 0
         self.turn_errors = 0
+        self._consecutive_failures = 0
+        self.on_unavailable = on_unavailable
 
     def receive(self, pcm: bytes):
         if self._closed:
@@ -315,11 +357,23 @@ class VoiceTurnEngine:
                     ])
                     self.history = self.history[-12:]
                     self.turns_completed += 1
+                    self._consecutive_failures = 0
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # No fake response and no hidden paid API fallback.
+                # No fabricated response and no hidden paid API fallback.
+                # Repeated local speech failures must not leave the caller
+                # in an indefinitely silent yet ACTIVE telephone session.
                 self.turn_errors += 1
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= 2:
+                    self._closed = True
+                    self._pending = None
+                    try:
+                        self.speaker.interrupt()
+                    finally:
+                        if self.on_unavailable is not None:
+                            self.on_unavailable()
 
     async def close(self):
         self._closed = True

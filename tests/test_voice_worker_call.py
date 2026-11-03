@@ -6,7 +6,7 @@ import tempfile
 import sys
 from types import ModuleType, SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from porcelainberryme.voice_livekit_agent import call_human
 from porcelainberryme.agent_knowledge import KnowledgeStore, ApprovedKnowledgeResponder
@@ -52,7 +52,7 @@ class OutboundAgentTests(unittest.IsolatedAsyncioTestCase):
              patch("porcelainberryme.voice_livekit_agent.LocalPiperVoice",
                    return_value=object()), \
              patch("porcelainberryme.voice_livekit_agent.LocalOllamaResponder",
-                   return_value=object()), \
+                   return_value=SimpleNamespace(preflight=AsyncMock())), \
              patch("porcelainberryme.voice_livekit_agent.CallControlClient", FakeControl), \
              patch("porcelainberryme.voice_livekit_agent.LiveKitAgentCall", FakeSession):
             await call_human(
@@ -205,6 +205,46 @@ class OutboundAgentTests(unittest.IsolatedAsyncioTestCase):
                            "Bitte wende dich an das zuständige Team."), observed)
             self.assertIn("ended", observed)
 
+    async def test_absent_local_llm_never_triggers_agent_ringing(self):
+        from porcelainberryme.local_voice import LocalVoiceUnavailable
+        media_module = ModuleType("livekit")
+        media_module.rtc = SimpleNamespace()
+        initiated = []
+
+        class MissingLocalModel:
+            async def preflight(self):
+                raise LocalVoiceUnavailable("local_ollama_model_not_installed")
+
+        class Control:
+            def __init__(self, token):
+                initiated.append("control_client_started")
+            async def originate(self, target, request_id):
+                initiated.append("incorrectly_rang")
+                raise AssertionError("must not ring")
+
+        with patch.dict(sys.modules, {"livekit": media_module}), \
+             patch.dict(os.environ, {
+                 "PB_AGENT_KNOWLEDGE_DB": "",
+                 "PB_APPOINTMENT_DB": "",
+             }), \
+             patch("porcelainberryme.voice_livekit_agent.LocalFasterWhisper",
+                   return_value=object()), \
+             patch("porcelainberryme.voice_livekit_agent.LocalPiperVoice",
+                   return_value=object()), \
+             patch("porcelainberryme.voice_livekit_agent.LocalOllamaResponder",
+                   return_value=MissingLocalModel()), \
+             patch("porcelainberryme.voice_livekit_agent.CallControlClient", Control):
+            with self.assertRaisesRegex(LocalVoiceUnavailable, "model_not_installed"):
+                await call_human(
+                    target="humanA", tenant="tenantA", agent_id="agentA",
+                    control_token="local-token", request_id="blocked-call-0001",
+                    whisper_model="/already-installed-whisper",
+                    ollama_model="not-installed",
+                    piper_binary="/already-installed-piper",
+                    piper_model="/already-installed-voice",
+                )
+        self.assertEqual(initiated, [])
+
     async def test_user_issued_token_cannot_run_as_agent(self):
         logs = []
         media_module = ModuleType("livekit")
@@ -226,7 +266,7 @@ class OutboundAgentTests(unittest.IsolatedAsyncioTestCase):
              patch("porcelainberryme.voice_livekit_agent.LocalPiperVoice",
                    return_value=object()), \
              patch("porcelainberryme.voice_livekit_agent.LocalOllamaResponder",
-                   return_value=object()), \
+                   return_value=SimpleNamespace(preflight=AsyncMock())), \
              patch("porcelainberryme.voice_livekit_agent.CallControlClient", FakeControl):
             with self.assertRaisesRegex(PermissionError, "identity_mismatch"):
                 await call_human(
