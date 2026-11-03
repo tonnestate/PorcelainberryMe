@@ -1,0 +1,66 @@
+name: Self-hosted WebRTC media integration
+
+# No ongoing hosted provider or recurring job. Execute only on relevant PRs.
+# GitHub Actions runner minutes may count against repository plan quotas.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/media-integration.yml'
+      - 'scripts/livekit_audio_smoke.py'
+      - 'scripts/generate_local_livekit_config.py'
+      - 'src/porcelainberryme/ip_calls.py'
+      - 'src/porcelainberryme/media_cleanup.py'
+      - 'src/porcelainberryme/voice_livekit_agent.py'
+      - 'pyproject.toml'
+
+permissions:
+  contents: read
+
+jobs:
+  real-media:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install minimal open-source RTC test dependency
+        run: |
+          python -m pip install -e .
+          python -m pip install 'livekit>=1.0,<2.0'
+      - name: Generate private self-hosted LiveKit test keys
+        run: |
+          python scripts/generate_local_livekit_config.py --output "$RUNNER_TEMP/pb-local-media"
+          chmod 600 "$RUNNER_TEMP/pb-local-media/"*
+      - name: Start real self-hosted LiveKit server on runner loopback
+        run: |
+          docker run --rm -d --name pb-livekit-smoke --network host \
+            -v "$RUNNER_TEMP/pb-local-media/livekit-local.yaml:/etc/livekit.yaml:ro" \
+            livekit/livekit-server:v1.13.11 \
+            --config /etc/livekit.yaml --bind 127.0.0.1
+          python - <<'PY'
+          import socket
+          import time
+          for attempt in range(30):
+              try:
+                  with socket.create_connection(('127.0.0.1', 7880), timeout=1):
+                      print('LiveKit TCP signaling is reachable')
+                      break
+              except OSError:
+                  time.sleep(1)
+          else:
+              raise SystemExit('self_hosted_livekit_not_ready')
+          PY
+      - name: Transfer real PCM across two WebRTC participants and verify teardown
+        shell: bash
+        run: |
+          set -a
+          source "$RUNNER_TEMP/pb-local-media/local-media.env"
+          set +a
+          PYTHONPATH=src python scripts/livekit_audio_smoke.py
+      - name: Diagnose and remove local LiveKit test container
+        if: always()
+        run: |
+          docker logs --tail 150 pb-livekit-smoke 2>&1 || true
+          docker stop pb-livekit-smoke || true
