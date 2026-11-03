@@ -132,3 +132,21 @@ live iOS/Android push acceptance, notification cancellation update,
 realtime authenticated browser identity provisioning, Contact/CallKit
 UI where an actual native app exists, real Whisper/Piper voice latency,
 multi-network TURN/TLS production acceptance and PSTN interconnection.
+
+
+## Browser call controls after notification click
+
+The first-party embedded controller is now implemented in
+clients/browser/call_console.mjs. The consuming authenticated web page can
+mount it on an existing DOM root using the documentation in
+BROWSER_CALL_CONSOLE.md. After a push notification click, the controller
+verifies the opaque call ID through the authenticated call API and only
+then shows the incoming call or authorized employee takeover with explicit
+action buttons. Unrelated/expired invitations never trigger a microphone
+request or unsolicited call acceptance. A new unit regression test proves
+pushManager.subscribe() is invoked synchronously in the user's click
+handler rather than after awaiting getSubscription().
+
+This source does NOT include a finished first-party PWA host login, bundled
+LiveKit browser assets or verified iPhone push delivery. These are
+independent, mandatory release criteria.
