@@ -53,6 +53,9 @@ class CallControlClient:
     async def request(self, method: str, path: str, payload=None):
         return await asyncio.to_thread(self._request, method, path, payload)
 
+    async def whoami(self):
+        return await self.request("GET", "/v1/ip-calls/whoami")
+
     async def originate(self, target: str, request_id: str):
         return await self.request("POST", "/v1/ip-calls", {
             "to": target, "idempotency_key": request_id,
@@ -142,6 +145,13 @@ class LiveKitAgentCall:
                     # 20ms framing is part of the turn detector contract.
                     raise LocalVoiceUnavailable("unexpected_inbound_frame_size")
                 self._engine.receive(raw)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Audio ingestion failure must not leave the other party
+            # listening indefinitely to an otherwise silent agent.
+            self._closed.set()
+            raise
         finally:
             await stream.aclose()
 
@@ -230,6 +240,11 @@ async def call_human(*, target: str, tenant: str, control_token: str,
     llm = LocalOllamaResponder(ollama_model)
     tts = LocalPiperVoice(piper_binary, piper_model)
     client = CallControlClient(control_token)
+    identity = await client.whoami()
+    if (identity.get("role") != "agent"
+            or identity.get("tenant") != tenant
+            or identity.get("subject") != agent_id):
+        raise PermissionError("verified_voice_agent_identity_mismatch")
     call = await client.originate(target, request_id)
     call_id = call["id"]
     if not call["agent_initiated"]:
