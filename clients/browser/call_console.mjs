@@ -160,8 +160,10 @@ export class CallConsoleController {
   async resumeCall(callId) {
     validId(callId);
     if (this.busy || this.destroyed) return false;
-    if (this.state.phase === 'active' && this.state.callId !== callId) {
-      return false; // never replace an active conversation without hangup
+    if (this.state.callId && this.state.callId !== callId
+        && this.state.phase !== 'idle') {
+      // Never replace an already pending, ringing or active conversation.
+      return false;
     }
     let call;
     try {
@@ -195,9 +197,14 @@ export class CallConsoleController {
       });
       return true;
     }
-    if (call.state === 'ACTIVE' && (
-      call.direction === 'incoming' || call.direction === 'outgoing'
-    ) && (handoff?.state !== 'OFFERED' || call.direction !== 'incoming')) {
+    const staffIdentity = handoff?.target === this.identity?.subject;
+    const agentTransferred = (call.direction === 'outgoing'
+                              && handoff?.state === 'CONNECTED');
+    const participantMayRejoin = staffIdentity
+      ? ['ACCEPTED', 'CONNECTED'].includes(handoff?.state)
+      : ['incoming', 'outgoing'].includes(call.direction);
+    if (call.state === 'ACTIVE' && participantMayRejoin
+        && !agentTransferred) {
       // A verified participant may reconnect only after an explicit click.
       // Never request a microphone from push/URL processing.
       this._update({
@@ -309,6 +316,7 @@ export class CallConsoleController {
       }
       const key = globalThis.crypto.randomUUID().replace(/-/g, '');
       const call = await this.client.dial(recipient, key);
+      validId(call?.id);
       this._update({
         phase: 'outgoing', callId: call.id, peer: recipient, kind: null,
         message: 'Internetverbindung wird angefragt.',
