@@ -221,6 +221,71 @@ class HandoffStateTests(unittest.TestCase):
             "ACCEPTED",
         )
 
+    def test_cancel_after_media_token_revokes_staff_not_customer(self):
+        call = self.active()
+        self.offer(call["id"])
+        self.db.decide_handoff(self.staff, call["id"], "accept")
+        staff_token = self.db.media_credentials(self.staff, call["id"])
+        self.db.decide_handoff(self.agent, call["id"], "cancel")
+        observed = []
+        def remove(room, participant):
+            observed.append((room, participant))
+        first = self.db.reconcile_handoff_kicks(remove)
+        self.assertEqual((first["reviewed"], first["completed"]), (1, 0))
+        self.assertEqual(observed[0], (
+            "pb_" + call["id"], staff_token["participant"],
+        ))
+        self.assertEqual(self.db.status(self.client, call["id"])["state"], "ACTIVE")
+        self.assertEqual(self.db.media_credentials(
+            self.client, call["id"])["room"], "pb_" + call["id"])
+        self.now[0] = staff_token["expires_at"] + 6
+        complete = self.db.reconcile_handoff_kicks(remove)
+        self.assertEqual(complete["completed"], 1)
+        self.assertEqual(self.db.reconcile_handoff_kicks(remove)["reviewed"], 0)
+        self.assertGreaterEqual(len(observed), 2)
+        with self.assertRaisesRegex(CallError, "handoff_not_accepted"):
+            self.db.media_credentials(self.staff, call["id"])
+
+    def test_staff_revocation_retries_after_restart_and_failure(self):
+        call = self.active()
+        self.offer(call["id"])
+        self.db.decide_handoff(self.staff, call["id"], "accept")
+        self.db.media_credentials(self.staff, call["id"])
+        self.now[0] += 61
+        self.assertEqual(self.db.status(self.agent, call["id"])["handoff"]["state"],
+                         "EXPIRED")
+        failed = self.db.reconcile_handoff_kicks(
+            lambda room, identity: (_ for _ in ()).throw(OSError("media_down")),
+        )
+        self.assertEqual(failed["retry_pending"], 1)
+        new_registry = CallRegistry(
+            self.db_path, identity_secret=self.secret,
+            media_key="self-hosted-test", media_secret=self.media_secret,
+            media_url="ws://127.0.0.1:7880", clock=lambda: self.now[0],
+        )
+        self.now[0] += 3
+        self.assertEqual(
+            new_registry.reconcile_handoff_kicks(lambda room, identity: None)[
+                "completed"
+            ], 1,
+        )
+        self.assertEqual(new_registry.status(
+            self.client, call["id"])["state"], "ACTIVE")
+
+    def test_original_caller_hangup_after_handoff_prevented(self):
+        call = self.active()
+        self.offer(call["id"])
+        self.db.decide_handoff(self.staff, call["id"], "accept")
+        self.db.media_credentials(self.staff, call["id"])
+        self.db.decide_handoff(self.agent, call["id"], "complete")
+        with self.assertRaisesRegex(CallError, "not_authorized_to_hangup"):
+            self.db.decide(self.agent, call["id"], "hangup")
+        self.assertEqual(self.db.decide(
+            self.client, call["id"], "hangup")["state"], "ENDED")
+        self.assertIn("ENDED", [
+            e["kind"] for e in self.db.inbox(self.staff)["events"]
+        ])
+
     def test_handoff_http_auth_and_staff_event(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.db))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
