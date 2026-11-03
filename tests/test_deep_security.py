@@ -198,10 +198,46 @@ class PreferenceTests(unittest.TestCase):
         self.assertEqual(staff_snapshot["calls"][0]["peer"], "customer")
         self.registry.decide_handoff(self.friend, outgoing["id"], "decline")
         self.assertEqual(self.registry.active_calls(self.friend)["calls"], [])
+        with self.assertRaisesRegex(CallError, "call_not_found"):
+            self.registry.status(self.friend, outgoing["id"])
+        staff_events = self.registry.inbox(self.friend)["events"]
+        self.assertGreaterEqual(len(staff_events), 2)
+        self.assertTrue(all(
+            event["call"] == {
+                "id": outgoing["id"], "state": "HANDOFF_REVOKED",
+            }
+            for event in staff_events
+        ))
         self.assertEqual(
             self.registry.active_calls(self.customer)["calls"][0]["state"],
             "ACTIVE",
         )
+
+    def test_expired_handoff_cannot_monitor_customer_and_keeps_event_cursor(self):
+        self.registry.configure_handoff_route("tenant1", "agent", "friend")
+        self.registry.update_preferences(
+            self.customer, {"allow_agent_calls": True},
+        )
+        call = self.registry.originate(
+            self.agent, "customer", "handoff-expiration-01",
+        )
+        self.registry.decide(self.customer, call["id"], "accept")
+        self.registry.offer_handoff(
+            self.agent, call["id"], idempotency_key="handoff-expire-01",
+        )
+        self.time[0] += 46
+        # Housekeeping expires the offer, not the underlying customer call.
+        with self.assertRaisesRegex(CallError, "call_not_found"):
+            self.registry.status(self.friend, call["id"])
+        safe_events = self.registry.inbox(self.friend)["events"]
+        self.assertIn("HANDOFF_EXPIRED", [row["kind"] for row in safe_events])
+        self.assertEqual({row["call"]["state"] for row in safe_events},
+                         {"HANDOFF_REVOKED"})
+        self.assertTrue(all(
+            "peer" not in row["call"] for row in safe_events
+        ))
+        self.assertEqual(self.registry.status(
+            self.customer, call["id"])["state"], "ACTIVE")
 
     def test_terminal_call_may_release_old_lease_without_hangup(self):
         self.registry.configure_inbound_agent("tenant1", "agent", True)
