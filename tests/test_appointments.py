@@ -76,6 +76,17 @@ class AppointmentTests(unittest.TestCase):
         self.assertEqual(len(self.store.bookings("tenantA", "agent", "caller")), 1)
         self.assertEqual(len(self.store.bookings("tenantA", "agent", "other")), 1)
 
+    def test_started_appointment_cannot_be_retroactively_cancelled(self):
+        appointment = self.store.book(
+            "tenantA", "agent", "caller", "2026-11-09T11:00",
+            idempotency_key="historical-booking-01",
+        )
+        self.now[0] = appointment["start_utc"] + 60
+        with self.assertRaisesRegex(AppointmentError, "cannot_cancel_started"):
+            self.store.cancel("tenantA", "agent", "caller", appointment["id"])
+        self.assertEqual(self.store.bookings(
+            "tenantA", "agent", "caller")[0]["status"], "BOOKED")
+
     def test_parallel_requests_do_not_double_book(self):
         def book(caller):
             try:
@@ -189,7 +200,7 @@ class VoiceBookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("14:00", suggested)
         self.assertEqual(self.store.bookings("client", "assistant", "person1"), [])
         no = await self.voice.respond("Ja", [])
-        self.assertIn("genauer", no)
+        self.assertIn("ausdrücklich", no)
         self.assertEqual(self.store.bookings("client", "assistant", "person1"), [])
         result = await self.voice.respond("Ja, Termin buchen!", [])
         self.assertIn("verbindlich", result)
@@ -211,7 +222,7 @@ class VoiceBookingTests(unittest.IsolatedAsyncioTestCase):
     async def test_unsupported_date_spelling_never_guess_or_book(self):
         response = await self.voice.respond(
             "Bitte einen Termin am kommenden Mittwoch nachmittags", [])
-        self.assertIn("genauer", response)
+        self.assertIn("eindeutiges Datum", response)
         self.assertEqual(self.store.bookings("client", "assistant", "person1"), [])
 
     async def test_explicit_voice_cancellation_only_by_booking_owner(self):
@@ -251,6 +262,21 @@ class VoiceBookingTests(unittest.IsolatedAsyncioTestCase):
         await self.voice.respond("Nein", [])
         self.assertEqual(self.store.bookings(
             "client", "assistant", "person1")[0]["status"], "BOOKED")
+
+    async def test_malformed_appointment_request_never_reaches_general_llm(self):
+        class DangerousFallback:
+            async def respond(self, text, history):
+                raise AssertionError("unstructured booking must not call general LLM")
+        voice = AppointmentVoiceResponder(
+            self.path, "client", "assistant", "person1",
+            DangerousFallback(), clock=lambda: self.now[0],
+        )
+        reply = await voice.respond("Termin nächsten Dienstag am Nachmittag buchen", [])
+        self.assertIn("eindeutiges Datum", reply)
+        reply = await voice.respond("Termin 09.11.2026 um 99 Uhr buchen", [])
+        self.assertIn("eindeutiges Datum", reply)
+        self.assertEqual(self.store.bookings(
+            "client", "assistant", "person1"), [])
 
     async def test_collision_between_proposal_and_confirmation(self):
         await self.voice.respond("Termin am 09.11.2026 um 16 Uhr", [])
