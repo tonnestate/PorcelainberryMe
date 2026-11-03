@@ -6,7 +6,7 @@ import tempfile
 import sys
 from types import ModuleType, SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from porcelainberryme.voice_livekit_agent import call_human
 from porcelainberryme.agent_knowledge import KnowledgeStore, ApprovedKnowledgeResponder
@@ -52,7 +52,7 @@ class OutboundAgentTests(unittest.IsolatedAsyncioTestCase):
              patch("porcelainberryme.voice_livekit_agent.LocalPiperVoice",
                    return_value=object()), \
              patch("porcelainberryme.voice_livekit_agent.LocalOllamaResponder",
-                   return_value=object()), \
+                   return_value=SimpleNamespace(preflight=AsyncMock())), \
              patch("porcelainberryme.voice_livekit_agent.CallControlClient", FakeControl), \
              patch("porcelainberryme.voice_livekit_agent.LiveKitAgentCall", FakeSession):
             await call_human(
@@ -226,7 +226,7 @@ class OutboundAgentTests(unittest.IsolatedAsyncioTestCase):
              patch("porcelainberryme.voice_livekit_agent.LocalPiperVoice",
                    return_value=object()), \
              patch("porcelainberryme.voice_livekit_agent.LocalOllamaResponder",
-                   return_value=object()), \
+                   return_value=SimpleNamespace(preflight=AsyncMock())), \
              patch("porcelainberryme.voice_livekit_agent.CallControlClient", FakeControl):
             with self.assertRaisesRegex(PermissionError, "identity_mismatch"):
                 await call_human(
