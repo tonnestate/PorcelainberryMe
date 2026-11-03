@@ -41,6 +41,11 @@ CONFIRM = {
     "ja bitte termin buchen",
     "ja bitte verbindlich buchen",
 }
+CONFIRM_CANCEL = {
+    "ja termin stornieren",
+    "ja bitte termin stornieren",
+    "ja termin absagen",
+}
 CANCEL = {"nein", "abbrechen", "doch nicht", "nein danke"}
 DEFAULT_LEAD_MINUTES = 60
 DEFAULT_HORIZON_DAYS = 90
@@ -422,13 +427,29 @@ class AppointmentVoiceResponder:
         self.greeting = getattr(fallback, "greeting", DEFAULT_GREETING)
         self._clock = clock or time.time
         self._pending: tuple[str, str, int] | None = None
+        self._cancel_pending: tuple[str, int] | None = None
 
     async def respond(self, text: str, history: list[dict]) -> str:
         normalized = re.sub(r"[^\w ]+", " ", text.casefold()).strip()
         normalized = re.sub(r"\s+", " ", normalized)
         if normalized in CANCEL:
             self._pending = None
-            return "Die Terminbuchung wurde abgebrochen. Es wurde kein neuer Termin gebucht."
+            self._cancel_pending = None
+            return "Der Vorgang wurde abgebrochen. Kein Termin wurde geändert."
+        if normalized in CONFIRM_CANCEL:
+            pending, self._cancel_pending = self._cancel_pending, None
+            if pending is None or int(self._clock()) - pending[1] > 120:
+                return "Bitte nennen Sie zuerst den Termin, den Sie stornieren möchten."
+            try:
+                result = await asyncio.to_thread(
+                    self.store.cancel, self.tenant, self.assistant,
+                    self.caller, pending[0],
+                )
+            except AppointmentError:
+                return "Die Stornierung konnte nicht abgeschlossen werden. Bitte wenden Sie sich an das Team."
+            local = datetime.strptime(result["local_start"], "%Y-%m-%dT%H:%M")
+            return (f"Der Termin am {local:%d.%m.%Y} um {local:%H:%M} Uhr "
+                    "wurde storniert.")
         if normalized in CONFIRM:
             pending, self._pending = self._pending, None
             if pending is None or int(self._clock()) - pending[2] > 120:
@@ -452,9 +473,32 @@ class AppointmentVoiceResponder:
             "termin", "terminbuchung", "buchen", "buchung",
             "reservieren", "frei", "verfügbar",
         ))
-        slot = _spoken_slot(text) if intent else None
+        cancel_intent = any(word in normalized.split() for word in (
+            "stornieren", "stornierung", "absagen",
+        ))
+        slot = _spoken_slot(text) if (intent or cancel_intent) else None
+        if slot is not None and cancel_intent:
+            self._pending = None
+            self._cancel_pending = None
+            existing = await asyncio.to_thread(
+                self.store.bookings, self.tenant, self.assistant, self.caller,
+            )
+            matched = next(
+                (row for row in existing if row["local_start"] == slot
+                 and row["status"] == "BOOKED"), None,
+            )
+            if matched is None:
+                return "Für diese Zeit liegt keine stornierbare eigene Buchung vor."
+            self._cancel_pending = (matched["id"], int(self._clock()))
+            local = datetime.strptime(slot, "%Y-%m-%dT%H:%M")
+            return (
+                f"Sie möchten den Termin am {local:%d.%m.%Y} "
+                f"um {local:%H:%M} Uhr stornieren. "
+                "Bitte bestätigen Sie mit: Ja, Termin stornieren."
+            )
         if slot is not None:
             self._pending = None
+            self._cancel_pending = None
             try:
                 open_slot = await asyncio.to_thread(
                     self.store.check, self.tenant, self.assistant, slot,
