@@ -161,6 +161,43 @@ class InternetCallsTest(unittest.TestCase):
         events = self.store.inbox(self.bob)["events"]
         self.assertEqual([event["kind"] for event in events], ["TIMED_OUT"])
 
+    def test_closed_call_records_and_related_events_expire_after_retention(self):
+        import sqlite3
+        call = self._ring()
+        self.store.decide(self.bob, call["id"], "decline")
+        self.tick[0] += 31 * 86400
+        with self.assertRaisesRegex(CallError, "call_not_found"):
+            self.store.status(self.alice, call["id"])
+        self.assertEqual(self.store.inbox(self.bob)["events"], [])
+        with sqlite3.connect(self.store.path) as con:
+            self.assertEqual(con.execute(
+                "SELECT COUNT(*) FROM ip_calls WHERE id=?", (call["id"],)
+            ).fetchone()[0], 0)
+
+    def test_media_teardown_prevents_premature_history_purge(self):
+        import sqlite3
+        call = self._ring(self.agent)
+        self.store.decide(self.bob, call["id"], "accept")
+        self.store.media_credentials(self.bob, call["id"])
+        self.store.decide(self.agent, call["id"], "hangup")
+        self.tick[0] += 31 * 86400
+        # Incomplete media disconnection is a durable safety obligation:
+        # the record must survive until the media server confirms cleanup.
+        self.assertEqual(self.store.status(self.agent, call["id"])["state"], "ENDED")
+        with sqlite3.connect(self.store.path) as con:
+            self.assertEqual(con.execute(
+                "SELECT completed FROM ip_media_teardown WHERE call_id=?",
+                (call["id"],)
+            ).fetchone()[0], 0)
+        self.assertEqual(self.store.reconcile_media(lambda room: None)["completed"], 1)
+        with self.assertRaisesRegex(CallError, "call_not_found"):
+            self.store.status(self.bob, call["id"])
+        with sqlite3.connect(self.store.path) as con:
+            self.assertEqual(con.execute(
+                "SELECT COUNT(*) FROM ip_media_teardown WHERE call_id=?",
+                (call["id"],)
+            ).fetchone()[0], 0)
+
     def test_existing_database_is_migrated_without_losing_consent(self):
         import sqlite3
         legacy = str(Path(self.tmp.name) / "legacy.sqlite")
