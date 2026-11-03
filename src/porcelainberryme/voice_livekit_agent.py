@@ -237,7 +237,15 @@ async def call_human(*, target: str, tenant: str, control_token: str,
 
     # Fail before dialing if local speech components are absent.
     stt = await asyncio.to_thread(LocalFasterWhisper, whisper_model)
-    llm = LocalOllamaResponder(ollama_model)
+    approved_db = os.environ.get("PB_AGENT_KNOWLEDGE_DB", "").strip()
+    if approved_db:
+        # Trusted per-agent corporate answers override general-purpose LLM.
+        # Unapproved or unknown company facts never reach the local LLM.
+        from .agent_knowledge import ApprovedKnowledgeResponder
+
+        llm = ApprovedKnowledgeResponder(approved_db, tenant, agent_id)
+    else:
+        llm = LocalOllamaResponder(ollama_model)
     tts = LocalPiperVoice(piper_binary, piper_model)
     client = CallControlClient(control_token)
     identity = await client.whoami()
@@ -289,8 +297,11 @@ def main():
         "piper_binary": os.environ.get("PB_LOCAL_PIPER_BIN", ""),
         "piper_model": os.environ.get("PB_LOCAL_PIPER_MODEL", ""),
     }
-    if any(not value for value in settings.values()):
-        parser.error("explicit local model paths, Ollama model, and agent token required")
+    required = ("control_token", "whisper_model", "piper_binary", "piper_model")
+    if any(not settings[name] for name in required):
+        parser.error("local speech files and agent identity token are required")
+    if not settings["ollama_model"] and not os.environ.get("PB_AGENT_KNOWLEDGE_DB"):
+        parser.error("local Ollama model or approved agent knowledge DB is required")
     asyncio.run(call_human(
         target=args.to, tenant=args.tenant,
         agent_id=args.agent, request_id=args.request_id, **settings,
