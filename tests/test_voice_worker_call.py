@@ -138,6 +138,73 @@ class OutboundAgentTests(unittest.IsolatedAsyncioTestCase):
                            "Dazu habe ich keine freigegebene Information. "
                            "Bitte wende dich an das zuständige Team."), observed)
 
+    async def test_agent_voice_worker_attaches_calendar_without_losing_greeting(self):
+        from porcelainberryme.appointments import AppointmentStore
+        with tempfile.TemporaryDirectory() as tmp:
+            knowledge = str(Path(tmp) / "knowledge.sqlite")
+            calendar = str(Path(tmp) / "appointments.sqlite")
+            KnowledgeStore(knowledge).configure(
+                "tenantA", "agentA", greeting="Herzlich willkommen.",
+            )
+            AppointmentStore(calendar).configure(
+                "tenantA", "agentA", tz="Europe/Berlin",
+                duration_min=30, weekly={"0": [["09:00", "17:00"]]},
+            )
+            observed = []
+            media_module = ModuleType("livekit")
+            media_module.rtc = SimpleNamespace()
+
+            class Control:
+                def __init__(self, token):
+                    pass
+
+                async def whoami(self):
+                    return {"role": "agent", "tenant": "tenantA", "subject": "agentA"}
+
+                async def originate(self, target, request_id):
+                    return {"id": "c" * 32, "agent_initiated": True}
+
+                async def status(self, call_id):
+                    return {"state": "ACTIVE"}
+
+                async def hangup(self, call_id):
+                    observed.append("ended")
+
+            class Session:
+                def __init__(self, **kwargs):
+                    self.reply = kwargs["llm"]
+                    observed.append(("greeting", kwargs["greeting"]))
+                    observed.append(("type", type(self.reply).__name__))
+
+                async def speak(self, call_id):
+                    observed.append(("fallback", await self.reply.respond(
+                        "Was kostet Ihr Service?", [],
+                    )))
+
+            with patch.dict(sys.modules, {"livekit": media_module}), \
+                 patch.dict(os.environ, {
+                     "PB_AGENT_KNOWLEDGE_DB": knowledge,
+                     "PB_APPOINTMENT_DB": calendar,
+                 }), \
+                 patch("porcelainberryme.voice_livekit_agent.LocalFasterWhisper",
+                       return_value=object()), \
+                 patch("porcelainberryme.voice_livekit_agent.LocalPiperVoice",
+                       return_value=object()), \
+                 patch("porcelainberryme.voice_livekit_agent.CallControlClient", Control), \
+                 patch("porcelainberryme.voice_livekit_agent.LiveKitAgentCall", Session):
+                await call_human(
+                    target="humanA", tenant="tenantA", agent_id="agentA",
+                    control_token="verified-token", request_id="approved-call-03",
+                    whisper_model="/existing-whisper", ollama_model="",
+                    piper_binary="/existing-piper", piper_model="/existing-voice",
+                )
+            self.assertIn(("greeting", "Herzlich willkommen."), observed)
+            self.assertIn(("type", "AppointmentVoiceResponder"), observed)
+            self.assertIn(("fallback",
+                           "Dazu habe ich keine freigegebene Information. "
+                           "Bitte wende dich an das zuständige Team."), observed)
+            self.assertIn("ended", observed)
+
     async def test_user_issued_token_cannot_run_as_agent(self):
         logs = []
         media_module = ModuleType("livekit")
