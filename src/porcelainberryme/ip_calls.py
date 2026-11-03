@@ -247,6 +247,51 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                 if updated.rowcount != 1:
                     raise CallError("account_not_enrolled", 404)
 
+    def preferences(self, claims: dict) -> dict:
+        """Read only the authenticated account's own consent and DND."""
+        with closing(self._conn()) as con:
+            row = con.execute(
+                "SELECT agent_calls,do_not_disturb FROM ip_call_users "
+                "WHERE tenant=? AND subject=?",
+                (claims["tenant"], claims["sub"]),
+            ).fetchone()
+            if row is None:
+                raise CallError("account_not_enrolled", 403)
+            return {
+                "allow_agent_calls": bool(row["agent_calls"]),
+                "do_not_disturb": bool(row["do_not_disturb"]),
+            }
+
+    def update_preferences(self, claims: dict, changes: dict) -> dict:
+        """Allow only a real human identity to control its own opt-in state.
+
+        Neither the agent nor a request parameter can select another account.
+        All requested changes are committed atomically.
+        """
+        if claims["role"] != "human":
+            raise CallError("only_human_can_change_call_preferences", 403)
+        if (not isinstance(changes, dict) or not changes
+                or set(changes) - {"allow_agent_calls", "do_not_disturb"}
+                or any(type(value) is not bool for value in changes.values())):
+            raise CallError("invalid_call_preferences")
+        with closing(self._conn()) as con:
+            with con:
+                current = con.execute(
+                    "SELECT agent_calls,do_not_disturb FROM ip_call_users "
+                    "WHERE tenant=? AND subject=?",
+                    (claims["tenant"], claims["sub"]),
+                ).fetchone()
+                if current is None:
+                    raise CallError("account_not_enrolled", 403)
+                consent = changes.get("allow_agent_calls", bool(current["agent_calls"]))
+                dnd = changes.get("do_not_disturb", bool(current["do_not_disturb"]))
+                con.execute(
+                    "UPDATE ip_call_users SET agent_calls=?,do_not_disturb=? "
+                    "WHERE tenant=? AND subject=?",
+                    (int(consent), int(dnd), claims["tenant"], claims["sub"]),
+                )
+                return {"allow_agent_calls": consent, "do_not_disturb": dnd}
+
     def _now(self):
         return int(self.clock())
 
@@ -671,6 +716,13 @@ def make_handler(registry: CallRegistry):
                         "tenant": claims["tenant"], "subject": claims["sub"],
                         "role": claims["role"],
                     })
+                if uri.path == "/v1/ip-calls/preferences":
+                    if self.command == "GET":
+                        return self._reply(200, registry.preferences(claims))
+                    if self.command == "POST":
+                        return self._reply(200, registry.update_preferences(
+                            claims, self._body(),
+                        ))
                 if self.command == "GET" and uri.path == "/v1/ip-calls/push/config":
                     return self._reply(200, registry.push_config())
                 if uri.path == "/v1/ip-calls/push/subscriptions":
