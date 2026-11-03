@@ -24,6 +24,8 @@ import time
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
+from .ip_handoff import HandoffMixin
+
 IDENTITY = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 IDEMPOTENCY = re.compile(r"^[A-Za-z0-9_.:-]{8,128}$")
 CALL_ID = re.compile(r"^[a-f0-9]{32}$")
@@ -114,7 +116,7 @@ def verify_identity_token(token: str, secret: str, *, now: int | None = None) ->
         raise CallError("unauthorized", 401) from exc
 
 
-class CallRegistry:
+class CallRegistry(HandoffMixin):
     """SQLite transactions serialize invitations, acceptance and termination.
 
     Client identity is always sourced from a server-verified token, never
@@ -181,6 +183,7 @@ class CallRegistry:
                   completed INTEGER NOT NULL DEFAULT 0
                 );
             """)
+            self._init_handoff_schema(con)
             # Existing installations migrate safely in place; previous
             # registration/consent preferences remain unchanged.
             columns = {
@@ -269,6 +272,7 @@ class CallRegistry:
             )
 
     def _transition_expired(self, con, now):
+        self._expire_handoffs(con, now)
         rows = con.execute(
             "SELECT * FROM ip_calls WHERE state IN ('RINGING', 'ACTIVE') "
             "AND expires_at<=?", (now,)
@@ -281,6 +285,9 @@ class CallRegistry:
             )
             self._event(con, call, call["caller"], "TIMED_OUT", now)
             self._event(con, call, call["callee"], "TIMED_OUT", now)
+            handoff = self._handoff_row(con, call["id"])
+            if handoff is not None and handoff["state"] == "CONNECTED":
+                self._event(con, call, handoff["target"], "TIMED_OUT", now)
 
     def _prune_closed_calls(self, con, now):
         # Keep history while media revocation is outstanding. Never delete a
@@ -297,6 +304,8 @@ class CallRegistry:
             call_id = row["id"]
             con.execute("DELETE FROM ip_call_events WHERE call_id=?", (call_id,))
             con.execute("DELETE FROM ip_media_teardown WHERE call_id=?", (call_id,))
+            con.execute("DELETE FROM ip_handoff_kicks WHERE call_id=?", (call_id,))
+            con.execute("DELETE FROM ip_call_handoffs WHERE call_id=?", (call_id,))
             con.execute("DELETE FROM ip_calls WHERE id=?", (call_id,))
 
     def _open(self):
@@ -333,8 +342,10 @@ class CallRegistry:
             raise CallError("call_not_found", 404)
         call = con.execute(
             "SELECT * FROM ip_calls WHERE id=? AND tenant=? "
-            "AND (caller=? OR callee=?)",
-            (call_id, tenant, subject, subject),
+            "AND (caller=? OR callee=? OR "
+            "EXISTS(SELECT 1 FROM ip_call_handoffs h WHERE h.call_id=ip_calls.id "
+            "AND h.tenant=? AND h.target=?))",
+            (call_id, tenant, subject, subject, tenant, subject),
         ).fetchone()
         if call is None:
             raise CallError("call_not_found", 404)
@@ -391,8 +402,11 @@ class CallRegistry:
                 busy = con.execute(
                     "SELECT 1 FROM ip_calls WHERE tenant=? "
                     "AND state IN ('RINGING', 'ACTIVE') "
-                    "AND (caller IN (?, ?) OR callee IN (?, ?)) LIMIT 1",
-                    (tenant, caller, callee, caller, callee),
+                    "AND (caller IN (?, ?) OR callee IN (?, ?) OR "
+                    "EXISTS(SELECT 1 FROM ip_call_handoffs h "
+                    "WHERE h.call_id=ip_calls.id AND h.target IN (?,?) "
+                    "AND h.state IN ('OFFERED','ACCEPTED','CONNECTED'))) LIMIT 1",
+                    (tenant, caller, callee, caller, callee, caller, callee),
                 ).fetchone()
                 if busy:
                     raise CallError("endpoint_busy", 409)
@@ -413,7 +427,7 @@ class CallRegistry:
         with closing(self._open()) as con:
             with con:
                 call = self._get(con, claims["tenant"], claims["sub"], call_id)
-                return self._visible(call, claims["sub"])
+                return self._handoff_with_call(con, call, claims["sub"])
 
     def inbox(self, claims: dict, after: int = 0) -> dict:
         if type(after) is not int or after < 0:
@@ -441,6 +455,13 @@ class CallRegistry:
                 call = self._get(con, claims["tenant"], claims["sub"], call_id)
                 if decision in ("accept", "decline") and claims["sub"] != call["callee"]:
                     raise CallError("only_recipient_can_decide", 403)
+                if decision == "hangup":
+                    handoff = self._handoff_row(con, call_id)
+                    allowed = (call["caller"], call["callee"])
+                    if handoff is not None and handoff["state"] == "CONNECTED":
+                        allowed = (call["callee"], handoff["target"])
+                    if claims["sub"] not in allowed:
+                        raise CallError("not_authorized_to_hangup", 403)
                 target = {"accept": "ACTIVE", "decline": "DECLINED",
                           "hangup": "ENDED"}[decision]
                 expected = ("RINGING",) if decision != "hangup" else ("RINGING", "ACTIVE")
@@ -457,6 +478,9 @@ class CallRegistry:
                 )
                 for user in (call["caller"], call["callee"]):
                     self._event(con, call, user, target, now)
+                handoff = self._handoff_row(con, call_id)
+                if handoff is not None and handoff["state"] == "CONNECTED":
+                    self._event(con, call, handoff["target"], target, now)
                 changed = con.execute("SELECT * FROM ip_calls WHERE id=?", (call_id,)).fetchone()
                 return self._visible(changed, claims["sub"])
 
@@ -467,6 +491,16 @@ class CallRegistry:
                 call = self._get(con, claims["tenant"], claims["sub"], call_id)
                 if call["state"] != "ACTIVE":
                     raise CallError("call_not_accepted", 409)
+                handoff = self._handoff_row(con, call_id)
+                is_staff = (handoff is not None
+                            and claims["sub"] == handoff["target"])
+                if is_staff and (claims["role"] != "human"
+                                 or handoff["state"] not in ("ACCEPTED", "CONNECTED")):
+                    raise CallError("handoff_not_accepted", 403)
+                if handoff is not None and handoff["state"] == "CONNECTED" and (
+                    claims["sub"] == call["caller"]
+                ):
+                    raise CallError("agent_already_handed_off", 403)
                 if not (self.media_key and self.media_secret and self.media_url):
                     raise CallError("media_backend_not_configured", 503)
                 # Opaque identity, unique per call. Do not embed real contact data.
@@ -475,6 +509,8 @@ class CallRegistry:
                 ).hexdigest()[:24]
                 room = "pb_" + call_id
                 token_expires = min(now + MEDIA_TOKEN_SECONDS, call["expires_at"])
+                if is_staff:
+                    token_expires = min(token_expires, handoff["expires_at"])
                 if token_expires <= now:
                     raise CallError("call_not_accepted", 409)
                 # Remember the last valid media token. A subsequent hangup
@@ -485,6 +521,14 @@ class CallRegistry:
                     "latest_token_exp=MAX(latest_token_exp, excluded.latest_token_exp)",
                     (call_id, room, token_expires),
                 )
+                if is_staff:
+                    con.execute(
+                        "UPDATE ip_call_handoffs SET media_issued=1 WHERE call_id=?",
+                        (call_id,),
+                    )
+                    self._track_staff_media_token(
+                        con, call, claims["sub"], token_expires,
+                    )
                 jwt = _jwt({
                     "iss": self.media_key, "sub": participant,
                     "iat": now, "nbf": now - 1, "exp": token_expires,
@@ -620,6 +664,15 @@ def make_handler(registry: CallRegistry):
                             return self._reply(200, registry.decide(claims, call_id, parts[3]))
                         if parts[3] == "media-token":
                             return self._reply(200, registry.media_credentials(claims, call_id))
+                        if parts[3] == "handoff":
+                            body = self._body()
+                            return self._reply(201, registry.offer_handoff(
+                                claims, call_id, idempotency_key=body.get("idempotency_key")))
+                    if (len(parts) == 5 and self.command == "POST"
+                            and parts[3] == "handoff"
+                            and parts[4] in ("accept", "decline", "cancel", "complete")):
+                        return self._reply(200, registry.decide_handoff(
+                            claims, call_id, parts[4]))
                 raise CallError("not_found", 404)
             except CallError as exc:
                 return self._reply(exc.status, {"error": exc.code})
@@ -651,6 +704,12 @@ def main():
     dnd.add_argument("--subject", required=True)
     dnd.add_argument("--enabled", action="store_true")
     dnd.add_argument("--disabled", action="store_true")
+    handoff = sub.add_parser(
+        "handoff-route", help="Trusted operator: map AI identity to human staff")
+    handoff.add_argument("--tenant", required=True)
+    handoff.add_argument("--assistant", required=True)
+    handoff.add_argument("--staff")
+    handoff.add_argument("--disable", action="store_true")
     enroll = sub.add_parser("enroll", help="Local trusted enrollment/agent-call consent")
     enroll.add_argument("--tenant", required=True)
     enroll.add_argument("--subject", required=True)
@@ -682,6 +741,13 @@ def main():
             parser.error("select exactly one of --enabled or --disabled")
         registry.set_do_not_disturb(args.tenant, args.subject, args.enabled)
         return
+    if args.cmd == "handoff-route":
+        if args.disable == bool(args.staff):
+            parser.error("select either --staff or --disable")
+        registry.configure_handoff_route(
+            args.tenant, args.assistant, None if args.disable else args.staff,
+        )
+        return
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(registry))
     stop = threading.Event()
     worker = None
@@ -707,6 +773,7 @@ def main():
                 if terminator is not None:
                     try:
                         registry.reconcile_media(terminator.delete_room)
+                        registry.reconcile_handoff_kicks(terminator.remove_participant)
                     except (sqlite3.Error, OSError) as exc:
                         # Never emit call identities, notes or secrets.
                         print("ip_media_reconcile_error:" + type(exc).__name__,

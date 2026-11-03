@@ -39,6 +39,9 @@ class LiveKitRoomTerminator:
             "http" if parsed.scheme == "ws" else "https",
             parsed.netloc, "/twirp/livekit.RoomService/DeleteRoom", "", "",
         ))
+        self.remove_endpoint = self.endpoint.replace(
+            "/DeleteRoom", "/RemoveParticipant",
+        )
         self.api_key = api_key
         self.api_secret = api_secret
         self.timeout = timeout_seconds
@@ -89,3 +92,56 @@ class LiveKitRoomTerminator:
             raise MediaTeardownError("livekit_delete_http_failed") from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise MediaTeardownError("livekit_delete_unreachable") from exc
+
+    def remove_participant(self, room: str, identity: str) -> None:
+        """Remove only a revoked staff participant, NEVER their customer's room.
+
+        The self-hosted server does not revoke existing join JWTs. The
+        durable control-plane outbox must repeat this operation through
+        token expiry plus clock skew to defeat immediate reconnection.
+        """
+        if not isinstance(room, str) or len(room) != 35 or not room.startswith("pb_"):
+            raise ValueError("invalid_managed_room")
+        if not isinstance(identity, str) or len(identity) != 27 or not identity.startswith("ip_"):
+            raise ValueError("invalid_managed_participant")
+        try:
+            int(room[3:], 16)
+            int(identity[3:], 16)
+        except ValueError as exc:
+            raise ValueError("invalid_managed_participant") from exc
+        now = int(self.clock())
+        token = _jwt({
+            "iss": self.api_key,
+            "iat": now, "nbf": now - 1, "exp": now + 30,
+            "video": {"roomAdmin": True, "room": room},
+        }, self.api_secret)
+        req = Request(
+            self.remove_endpoint, method="POST",
+            data=json.dumps(
+                {"room": room, "identity": identity},
+                separators=(",", ":"),
+            ).encode(),
+            headers={
+                "Authorization": "Bearer " + token,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with self.http_open(req, timeout=self.timeout) as response:
+                if response.status != 200:
+                    raise MediaTeardownError("livekit_staff_remove_not_confirmed")
+                response.read(1024)
+        except HTTPError as exc:
+            # Only an authentic Twirp not_found acknowledgement is accepted
+            # as absence; a reverse-proxy's arbitrary 404 is not success.
+            if exc.code == 404:
+                try:
+                    payload = json.loads(exc.read(2048))
+                    if payload.get("code") == "not_found":
+                        return
+                except (ValueError, TypeError, AttributeError):
+                    pass
+            raise MediaTeardownError("livekit_staff_remove_http_failed") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise MediaTeardownError("livekit_staff_remove_unreachable") from exc

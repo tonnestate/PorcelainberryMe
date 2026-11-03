@@ -95,3 +95,8 @@ The call API remains loopback-only. The HTTP response to hangup confirms the **c
 The implementation deliberately avoids assuming an ordinary phone number or an incoming PSTN trunk. Media cleanup does not confer carrier connectivity.
 
 Verified protocol: https://docs.livekit.io/reference/other/roomservice-api/
+
+
+## Operator-approved employee warm handoff
+
+The integrated AI worker can transfer a customer to a trusted enrolled human colleague *within the same self-hosted LiveKit room*. The customer must explicitly request it, staff accepts or declines via the existing authenticated browser client, and the AI leaves only after observing the colleague's actual microphone identity. The completed transfer retains original call state for customer and staff; the AI can no longer hang up their call. Staff DND/busy, timeouts and persistent revocation of cancelled staff media tokens are covered. A real three-party LiveKit synthetic-audio CI test passed; actual smartphone/TURN/PSTN conditions are not established. See docs/STAFF_HANDOFF.md.

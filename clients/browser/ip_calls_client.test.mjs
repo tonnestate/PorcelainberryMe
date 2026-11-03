@@ -108,3 +108,77 @@ test('polling an ended call disconnects the media session', async () => {
   assert.deepEqual(observed, ['ENDED']);
   assert.equal(client.cursor, 4);
 });
+
+test('employee accepts warm handoff, joins same room, and hangs up independently', async () => {
+  const requests = [];
+  let remoteConnected = false;
+  let remoteDisconnected = false;
+  const roomFactory = () => ({
+    on(event, handler) {
+      assert.equal(event, 'trackSubscribed');
+    },
+    async connect(url, token) {
+      assert.equal(url, 'ws://localhost:7880');
+      assert.equal(token, 'staff-media-jwt');
+      remoteConnected = true;
+    },
+    localParticipant: {
+      async setMicrophoneEnabled(enabled) {
+        assert.equal(enabled, true);
+      },
+    },
+    async disconnect() { remoteDisconnected = true; },
+  });
+  const fetchImpl = async (url, args) => {
+    requests.push([url, args.method]);
+    if (url.endsWith('/handoff/accept')) {
+      return { ok: true, json: async () => ({
+        state: 'ACCEPTED', target: 'employee',
+      }) };
+    }
+    if (url.endsWith('/media-token')) {
+      return { ok: true, json: async () => ({
+        url: 'ws://localhost:7880',
+        token: 'staff-media-jwt',
+        room: 'pb_existing_customer_call',
+      }) };
+    }
+    if (url.endsWith('/hangup')) {
+      return { ok: true, json: async () => ({
+        state: 'ENDED',
+      }) };
+    }
+    throw new Error('unexpected_endpoint_' + url);
+  };
+  const client = new IPCallClient({
+    apiBase: 'http://localhost:8874',
+    identityToken: 'verified-employee',
+    roomFactory, fetchImpl,
+  });
+  assert.equal((await client.acceptHandoff('current-call-id')).state, 'ACCEPTED');
+  const connected = await client.connect('current-call-id');
+  assert.equal(connected.room, 'pb_existing_customer_call');
+  assert.equal(remoteConnected, true);
+  await client.hangup('current-call-id');
+  assert.equal(remoteDisconnected, true);
+  assert.deepEqual(
+    requests.map(row => row[0].split('/').at(-1)),
+    ['accept', 'media-token', 'hangup'],
+  );
+});
+
+test('declining warm handoff does not hang up original customer call', async () => {
+  const requests = [];
+  const client = new IPCallClient({
+    apiBase: 'http://localhost:8874',
+    identityToken: 'verified-employee',
+    fetchImpl: async (url, request) => {
+      requests.push(url);
+      return { ok: true, json: async () => ({ state: 'DECLINED' }) };
+    },
+  });
+  assert.equal((await client.declineHandoff('call-a')).state, 'DECLINED');
+  assert.equal(requests[0].endsWith('/handoff/decline'), true);
+  assert.equal(client.room, null);
+  assert.equal(client.callId, null);
+});

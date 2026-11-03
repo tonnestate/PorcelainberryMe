@@ -62,3 +62,12 @@ relevant pull requests; it is not a scheduled infrastructure bill.
 
 Only label this milestone 'real, local, synthetic WebRTC media proof',
 never 'complete Fonio-equivalent telephone system'.
+
+
+## Real three-party staff takeover (2026-11-03)
+
+The new PR test scripts/handoff_network_smoke.py verified AI, customer and employee in the *same* actual self-hosted LiveKit room. A tenant-controlled staff route sent an explicit offer; staff accepted and published a real microphone track. The existing AI worker observed the expected remote participant identity and left, and the connected customer then received five nonzero PCM frames from staff. The original call remained ACTIVE after AI departure. Automated marker:
+
+    {"result":"REAL_HUMAN_HANDOFF_SAME_ROOM","staff_audio_received":5,"agent_exited_without_hangup":true,"customer_call_remains_active":true,"paid_api_used":false,"pstn_used":false}
+
+This validates the WebRTC control and media transition with synthetic PCM and local fake speech adapters. It does not validate real Whisper/Ollama/Piper language understanding, natural handoff phrasing, end-user mobile app delivery or PSTN access.
