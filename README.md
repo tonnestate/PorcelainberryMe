@@ -95,3 +95,24 @@ Technical details: [operator handoff](docs/OPERATIONS.md),
 The scope is now an **independently usable headless IP communications platform**, including **agent-initiated calls to registered Internet identities**, not merely a SIP/WhatsApp relay for FruitStack. The initial call-control implementation handles a verified agent's outbound call invitation, recipient-specific ring notifications, explicit answer/decline/hangup, tenant and identity isolation, stable idempotency, timeouts, and issuance of short-lived **self-hosted LiveKit** microphone-only room credentials after acceptance. It uses the standard library and existing SQLite; no paid API is required to run the control plane.
 
 **Not yet a working voice phone or commercial SaaS:** LiveKit media has not been deployed, no independent user app or local AI speech agent is running, and no real WebRTC audio call has passed. Native phone numbers and ordinary cellular calls require a separate PSTN interconnect and cannot be reached over Internet alone at zero provider cost. See [HEADLESS_IP_CALLS.md](docs/HEADLESS_IP_CALLS.md) for the source-only invocation, architecture and remaining hard release gates. The earlier experimental baresip SIP module is not the default media path.
+
+
+### Free local AI voice worker (in development)
+
+This feature branch now includes a concrete autonomous **Internet** voice-agent code path:
+authenticated agent role -> originate a consented IP call -> wait for acceptance
+-> join a self-hosted LiveKit microphone room -> receive real 20-ms PCM frames
+-> segment human turns -> transcribe with an **already-installed**
+faster-whisper model -> respond using **local Ollama** -> synthesize via an
+**already-installed Piper voice** -> publish PCM back to the same WebRTC room.
+Incoming speech interrupts the outgoing audio queue. No paid APIs, carrier
+plans or new cloud subscriptions are dependencies.
+
+**Status:** all tests so far are offline/mocked; no real deployment, installed
+models, LiveKit audio acceptance, iPhone background ringing or acceptable
+natural speech latency are established. The first energy-based detector and
+whole-utterance STT/TTS are not production-ready conversational turn-taking.
+The free Python optional extras are deliberately not installed by default.
+See [local agent execution and acceptance](docs/LOCAL_VOICE_AGENT.md) and
+[headless call architecture](docs/HEADLESS_IP_CALLS.md). Public mobile/landline
+numbers remain impossible without a separately funded PSTN interconnect.
