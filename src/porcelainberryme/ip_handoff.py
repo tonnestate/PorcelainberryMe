@@ -9,6 +9,7 @@ has joined with its provisioned microphone identity.
 from __future__ import annotations
 
 from contextlib import closing
+import hashlib
 
 HANDOFF_OFFER_SECONDS = 45
 HANDOFF_JOIN_SECONDS = 60
@@ -35,6 +36,13 @@ class HandoffMixin:
             );
             CREATE INDEX IF NOT EXISTS ip_handoff_target
               ON ip_call_handoffs(tenant,target,state);
+            CREATE TABLE IF NOT EXISTS ip_handoff_kicks (
+              call_id TEXT PRIMARY KEY, room TEXT NOT NULL,
+              participant TEXT NOT NULL, latest_token_exp INTEGER NOT NULL,
+              next_attempt INTEGER NOT NULL DEFAULT -1,
+              attempts INTEGER NOT NULL DEFAULT 0,
+              completed INTEGER NOT NULL DEFAULT 0
+            );
         """)
 
     def configure_handoff_route(self, tenant, assistant, staff):
@@ -103,6 +111,7 @@ class HandoffMixin:
                 "UPDATE ip_call_handoffs SET state='EXPIRED' WHERE call_id=?",
                 (call["id"],),
             )
+            self._schedule_handoff_kick(con, call["id"], now)
             for user in (call["caller"], call["callee"], call["handoff_staff"]):
                 self._event(con, call, user, "HANDOFF_EXPIRED", now)
 
@@ -126,8 +135,9 @@ class HandoffMixin:
                 if old is not None:
                     if old["idem"] == idempotency_key:
                         return self._handoff_visible(old)
-                    if old["state"] in ACTIVE_HANDOFF:
-                        raise CallError("handoff_already_pending", 409)
+                    # Never overwrite the revocation obligation of a
+                    # previously issued media token for a different staff.
+                    raise CallError("handoff_already_attempted", 409)
                 route = con.execute(
                     "SELECT staff FROM ip_handoff_routes "
                     "WHERE tenant=? AND assistant=?",
@@ -222,6 +232,85 @@ class HandoffMixin:
                     "state=?,expires_at=?,connected_at=? WHERE call_id=?",
                     (target, expires, now if action == "complete" else None, call_id),
                 )
+                if action == "cancel":
+                    self._schedule_handoff_kick(con, call_id, now)
                 for recipient in (call["caller"], call["callee"], handoff["target"]):
                     self._event(con, call, recipient, "HANDOFF_" + target, now)
                 return self._handoff_visible(self._handoff_row(con, call_id))
+    @staticmethod
+    def _schedule_handoff_kick(con, call_id, now):
+        con.execute(
+            "UPDATE ip_handoff_kicks SET next_attempt=?,completed=0 "
+            "WHERE call_id=?",
+            (now, call_id),
+        )
+
+    def _track_staff_media_token(self, con, call, staff, latest_token_exp):
+        # Repeated removal is mandatory: self-hosted LiveKit does not revoke
+        # a previously issued JWT when a participant is kicked.
+        participant = "ip_" + hashlib.sha256(
+            (call["id"] + ":" + call["tenant"] + ":" + staff).encode()
+        ).hexdigest()[:24]
+        con.execute(
+            "INSERT INTO ip_handoff_kicks("
+            "call_id,room,participant,latest_token_exp,next_attempt) "
+            "VALUES(?,?,?,?,-1) ON CONFLICT(call_id) DO UPDATE SET "
+            "latest_token_exp=MAX(latest_token_exp,excluded.latest_token_exp)",
+            (call["id"], "pb_" + call["id"], participant, latest_token_exp),
+        )
+
+    def reconcile_handoff_kicks(self, remove_participant, *, limit=20):
+        """Remove cancelled/expired staff repeatedly through last token expiry."""
+        from .ip_calls import MEDIA_REVOKE_GRACE_SECONDS, MEDIA_CLEANUP_INTERVAL_SECONDS
+        if not callable(remove_participant):
+            raise ValueError("staff_remover_required")
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("invalid_handoff_cleanup_limit")
+        now = self._now()
+        with closing(self._open()) as con:
+            with con:
+                jobs = con.execute(
+                    "SELECT k.call_id,k.room,k.participant,k.latest_token_exp,k.attempts "
+                    "FROM ip_handoff_kicks k JOIN ip_call_handoffs h "
+                    "ON k.call_id=h.call_id WHERE k.completed=0 AND "
+                    "k.next_attempt>=0 AND k.next_attempt<=? AND "
+                    "h.state IN ('CANCELLED','EXPIRED') "
+                    "ORDER BY k.next_attempt,k.call_id LIMIT ?",
+                    (now, limit),
+                ).fetchall()
+                for job in jobs:
+                    con.execute(
+                        "UPDATE ip_handoff_kicks SET next_attempt=? WHERE call_id=?",
+                        (now + 30, job["call_id"]),
+                    )
+        completed = retried = 0
+        for job in jobs:
+            succeeded = False
+            try:
+                remove_participant(job["room"], job["participant"])
+                succeeded = True
+            except Exception:
+                pass  # Never claim media revocation after network failure.
+            stamp = self._now()
+            final = succeeded and stamp >= (
+                job["latest_token_exp"] + MEDIA_REVOKE_GRACE_SECONDS
+            )
+            next_attempt = (
+                stamp + MEDIA_CLEANUP_INTERVAL_SECONDS if succeeded
+                else stamp + min(30, 2 ** min(5, job["attempts"]))
+            )
+            with closing(self._conn()) as con:
+                with con:
+                    con.execute(
+                        "UPDATE ip_handoff_kicks SET attempts=attempts+1,"
+                        "next_attempt=?,completed=? WHERE call_id=?",
+                        (-1 if final else next_attempt, int(final), job["call_id"]),
+                    )
+            if final:
+                completed += 1
+            else:
+                retried += 1
+        return {
+            "reviewed": len(jobs), "completed": completed,
+            "retry_pending": retried,
+        }
