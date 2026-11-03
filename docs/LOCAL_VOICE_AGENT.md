@@ -162,3 +162,8 @@ The generator does not install software, buy a telephone number,
 download a model, start LiveKit, or use a cloud account. A fully external
 WebRTC deployment requires separate firewall/TURN/TLS configuration
 and on-host resource verification.
+
+
+## Opt-in local after-call notes
+
+Set PB_CALL_NOTES_DB on the existing headless server and the autonomous voice worker to activate the *possibility* of retention. The caller must still speak the explicit consent phrase in docs/POST_CALL_NOTES.md during each individual call, and can revoke. The worker persists bounded user-excerpt notes only after the call ends, then clears transient history; no raw audio or full transcript is written. Source-level tests cover consent and the simulated RTC/voice-session lifecycle, but not live telephone quality.
