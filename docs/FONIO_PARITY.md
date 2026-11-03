@@ -23,16 +23,16 @@ Sources:
 | Configurable assistants | Unlimited assistants listed | Basic per-tenant agent identity and now reviewed FAQ profile; no customer portal | Secure self-service enrollment, greeting, workflow, permissions |
 | Business website/docs knowledge | Website content, self-learning knowledge and approvals | NEW: manually reviewed, exact-question FAQ, no scraping or semantic RAG | Document ingestion, provenance, semantic retrieval, review inbox |
 | Conditional call opening | Yes | NEW: per-assistant spoken greeting at call start; conditional start-rules absent | Per-agent condition engine and real listening test |
-| Calendar/appointment actions | Yes | Not implemented | Availability/read/book/change/cancel with atomic approval/receipts |
+| Calendar/appointment actions | Yes | NEW: local calendar availability, concurrency-safe confirmed voice bookings, own-booking cancellation and ICS export; no external calendar sync or rescheduling | Real provider calendar adapters, reminders, team booking, flexible speech dates and end-to-end validation |
 | Live handoff to a person | Yes | Ending an IP call works; verified transfer/handoff not implemented | Consent-aware transfer + agent context handoff |
 | Conversation summary/transcript | Yes | Transient in-memory speech history; no authorized workflow summary | Consent, retention, extraction and delivery receipts |
 | CRM/data integrations | 30+ claimed | Some standalone adapters and owner integrations, not generic audited customer tool execution | Per-tenant scoped tools, webhooks, CRM/approval workflow |
 | Incoming caller-specific context | Inbound webhook | Not implemented for independent customer calls | Authenticated tenant-bound context provider with timeout and data minimization |
-| Call accounting/concurrency | Plans and limits | Single-call-per-account prototype, no billing/quotas | Real metering, budgets, tenant capacity, resource ceilings |
+| Call accounting/concurrency | Plans and limits | Per-tenant hard cap of 40 simultaneous control sessions, AI-call 120s cooldown, per-user DND; no metering or billing | Tenant-configurable quotas, observed capacity, resource ceilings, billing |
 | Customer-facing SaaS | Self-service dashboard, team users | No complete customer UI/onboarding/payments | RBAC, portal, settings, subscriptions, audit |
 | Privacy and retention | Optional privacy controls | Call audio not persisted by voice engine; optional reviewed unknown-question inbox | Complete GDPR review, data subject rights, retention/consent proof |
 
-## Actual new capability (this milestone)
+## Current concrete additions (2026-11-03)
 
 See docs/AGENT_KNOWLEDGE.md. PorcelainberryMe now contains a local
 reviewed FAQ system with explicit human approval, a spoken greeting, revision-invalidating
@@ -41,6 +41,14 @@ fallback and opt-in question inbox with bounded retention. The autonomous
 WebRTC voice worker actually selects that responder when configured.
 Current matching is normalized exact-question lookup, not semantic RAG;
 do not advertise it as full Fonio knowledge parity or self-learning.
+
+The new autonomous appointment integration is documented in docs/APPOINTMENTS.md.
+It offers an internal SQLite calendar with explicit opening hours, atomic
+booking/cancellation, safe confirmation phrases and iCalendar export, but
+is NOT synchronized with customer Google/Microsoft calendars. New call
+safety gates in ip_calls.py include per-recipient DND, agent cooldown,
+tenant-level concurrent control capacity and bounded event retention.
+The opening greeting now runs concurrently with call-state monitoring.
 
 ## Differentiation beyond Fonio (goals, not unproven claims)
 
