@@ -17,8 +17,8 @@ Sources:
 | --- | --- | --- | --- |
 | Ordinary PSTN numbers (inbound/outbound) | Yes, number/SIP/carrier plans | NO PSTN access; only Internet identities | Carrier interconnect required; impossible to claim free PSTN from Internet alone |
 | Real incoming calls | Yes | IP invitation and browser polling only, no sleeping handset notification | End-to-end iPhone/mobile and remote network tests |
-| Outbound AI calls | Yes on supported plans | Agent invokes IP call API and local RTC worker; not public phone numbers | Live user acceptance, audio, calling policy, error handling |
-| Low-latency natural conversation | Yes | PCM pipeline and whole-turn offline speech backends; no live quality proof | German latency/interruption field trials |
+| Outbound AI calls | Yes on supported plans | Real media CI verifies IP origination, acceptance and actual LiveKit voice-agent PCM with local fake speech providers; no PSTN numbers | Installed real models, human call quality, outbound consent UX, caller abuse testing |
+| Low-latency natural conversation | Yes | Real self-hosted PCM transport and full agent pipeline proven with synthetic audio; natural model latency and turn quality remain unverified | German Whisper/Ollama/Piper audio and interruption measurements |
 | Many voices/languages | 120+ voices, 60+ languages listed | One explicitly installed local Piper voice; German local STT setting | Model inventory, licenses, pronunciation, tests |
 | Configurable assistants | Unlimited assistants listed | Basic per-tenant agent identity and now reviewed FAQ profile; no customer portal | Secure self-service enrollment, greeting, workflow, permissions |
 | Business website/docs knowledge | Website content, self-learning knowledge and approvals | NEW: local approved text/Markdown document paragraphs plus exact FAQ, revision-specific approval and source title; no website crawling, PDF parser or semantic RAG | Automatic ingestion, multilingual semantic retrieval, evidence evaluation and review UI |
@@ -91,3 +91,8 @@ Reviewable UTF-8 TXT/Markdown paragraphs, document revision approvals, source-ti
 ## Opt-in follow-up notes milestone
 
 The voice agent now supports call-scoped spoken consent/revocation and a bounded, local SQLite note of user utterances spoken after consent. It does not claim Fonio's full call transcription, AI summaries, email or CRM workflow. The existing IP-call server can prune expired notes hourly without a new daemon or paid provider. Details: docs/POST_CALL_NOTES.md.
+
+
+## Real WebRTC synthetic media proof
+
+On 2026-11-03, isolated GitHub PR CI passed both two-peer real WebRTC PCM transport and actual autonomous agent audio pipeline, using self-hosted LiveKit v1.13.11 and free local fake STT/LLM/TTS. Evidence: docs/REAL_MEDIA_EVIDENCE.md. Do **not** extrapolate this to natural German speech, actual VPS capacity, iOS/PSTN calling or Fonio product parity.
