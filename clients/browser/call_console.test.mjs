@@ -33,6 +33,9 @@ function mockedClient({ calls = {}, identity = {
       }
       throw new Error('unexpected_http_request');
     },
+    async pushConfig() {
+      return mock.request('GET', '/v1/ip-calls/push/config');
+    },
     startPolling(interval) { log.push(['polling_started', interval]); },
     stopPolling() { log.push(['polling_stopped']); },
     async pollOnce() { return { events: [] }; },
