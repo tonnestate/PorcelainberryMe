@@ -17,7 +17,7 @@ import shutil
 import struct
 import subprocess
 import time
-from typing import Protocol
+from typing import Callable, Protocol
 
 
 SAMPLE_RATE = 16000
@@ -307,7 +307,8 @@ class VoiceTurnEngine:
     """
 
     def __init__(self, stt: Transcriber, llm: Responder, tts: Synthesizer,
-                 speaker: Speaker, *, threshold: int = 600):
+                 speaker: Speaker, *, threshold: int = 600,
+                 on_unavailable: Callable[[], None] | None = None):
         self.detector = EnergyTurnDetector(threshold=threshold)
         self.stt, self.llm, self.tts, self.speaker = stt, llm, tts, speaker
         self.history: list[dict] = []
@@ -317,6 +318,8 @@ class VoiceTurnEngine:
         self._closed = False
         self.turns_completed = 0
         self.turn_errors = 0
+        self._consecutive_failures = 0
+        self.on_unavailable = on_unavailable
 
     def receive(self, pcm: bytes):
         if self._closed:
@@ -352,11 +355,23 @@ class VoiceTurnEngine:
                     ])
                     self.history = self.history[-12:]
                     self.turns_completed += 1
+                    self._consecutive_failures = 0
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # No fake response and no hidden paid API fallback.
+                # No fabricated response and no hidden paid API fallback.
+                # Repeated local speech failures must not leave the caller
+                # in an indefinitely silent yet ACTIVE telephone session.
                 self.turn_errors += 1
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= 2:
+                    self._closed = True
+                    self._pending = None
+                    try:
+                        self.speaker.interrupt()
+                    finally:
+                        if self.on_unavailable is not None:
+                            self.on_unavailable()
 
     async def close(self):
         self._closed = True
