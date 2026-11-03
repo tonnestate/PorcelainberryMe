@@ -178,3 +178,8 @@ The existing approved agent knowledge database also supports trusted local Markd
 ### Consent-gated local post-call notes
 
 The existing self-hosted voice worker can store short, deterministic caller-request notes **only after explicit spoken opt-in in that call**. Revocation before hangup cancels note storage; no audio or full transcript is persisted by this feature. Notes contain up to four short post-consent user excerpts and expire after 14 days (hourly cleanup by the existing call server). No cloud summarizer or paid API. Setup and limitations: [post-call notes](docs/POST_CALL_NOTES.md). This is not an AI-generated summary or email/CRM automation.
+
+
+### Autonomous human handoff (real RTC integration verified)
+
+An operator may configure one approved employee per tenant/assistant. After an explicit customer spoken request, the AI offers a warm handoff. Staff must accept; their microphone must be observed in the **same** self-hosted LiveKit room before the AI disconnects. The staff/customer call continues without the AI. Declines, expiry, busy/DND and cancelled staff media tokens are handled with a durable, bounded removal journal. A real three-peer LiveKit CI test has passed without PSTN or a paid API. This is **not** a public-number/SIP carrier transfer or finished mobile phone service. See [staff handoff](docs/STAFF_HANDOFF.md) and [real-media evidence](docs/REAL_MEDIA_EVIDENCE.md).
