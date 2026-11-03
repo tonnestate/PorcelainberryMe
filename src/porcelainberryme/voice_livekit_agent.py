@@ -16,6 +16,7 @@ import sys
 import time
 from uuid import uuid4
 
+from .agent_knowledge import DEFAULT_GREETING
 from .local_voice import (
     AudioPacket, LocalFasterWhisper, LocalOllamaResponder,
     LocalPiperVoice, LocalVoiceUnavailable, VoiceTurnEngine,
@@ -110,7 +111,11 @@ class LiveKitAgentCall:
     """One-to-one voice assistant for an already accepted Internet call."""
 
     def __init__(self, *, client: CallControlClient, tenant: str,
-                 callee: str, tts, stt, llm, rtc):
+                 callee: str, tts, stt, llm, rtc,
+                 greeting: str = DEFAULT_GREETING):
+        if not isinstance(greeting, str) or not 1 <= len(greeting.strip()) <= 500:
+            raise ValueError("invalid_agent_greeting")
+        self.greeting = greeting.strip()
         self.client = client
         self.tenant = tenant
         self.callee = callee
@@ -201,6 +206,17 @@ class LiveKitAgentCall:
             options = self.rtc.TrackPublishOptions()
             options.source = self.rtc.TrackSource.SOURCE_MICROPHONE
             await room.local_participant.publish_track(track, options)
+            # This is an actual audio greeting, not just a profile field.
+            # Remote audio is already subscribed, so human barge-in can
+            # cancel queued greeting playback through VoiceTurnEngine.
+            if not self._closed.is_set():
+                # Never play a delayed greeting after the callee has
+                # already started speaking while local TTS was running.
+                greeting_epoch = self._engine._epoch
+                welcome_pcm = await self.tts.synthesize(self.greeting)
+                if (not self._closed.is_set()
+                        and greeting_epoch == self._engine._epoch):
+                    await speaker.play(welcome_pcm)
             watcher = asyncio.create_task(self._watch_call(call_id))
             waiter = asyncio.create_task(self._closed.wait())
             try:
@@ -237,7 +253,15 @@ async def call_human(*, target: str, tenant: str, control_token: str,
 
     # Fail before dialing if local speech components are absent.
     stt = await asyncio.to_thread(LocalFasterWhisper, whisper_model)
-    llm = LocalOllamaResponder(ollama_model)
+    approved_db = os.environ.get("PB_AGENT_KNOWLEDGE_DB", "").strip()
+    if approved_db:
+        # Trusted per-agent corporate answers override general-purpose LLM.
+        # Unapproved or unknown company facts never reach the local LLM.
+        from .agent_knowledge import ApprovedKnowledgeResponder
+
+        llm = ApprovedKnowledgeResponder(approved_db, tenant, agent_id)
+    else:
+        llm = LocalOllamaResponder(ollama_model)
     tts = LocalPiperVoice(piper_binary, piper_model)
     client = CallControlClient(control_token)
     identity = await client.whoami()
@@ -257,6 +281,7 @@ async def call_human(*, target: str, tenant: str, control_token: str,
                 await LiveKitAgentCall(
                     client=client, tenant=tenant, callee=target,
                     tts=tts, stt=stt, llm=llm, rtc=rtc,
+                    greeting=getattr(llm, "greeting", DEFAULT_GREETING),
                 ).speak(call_id)
                 return
             if status["state"] != "RINGING":
@@ -289,8 +314,11 @@ def main():
         "piper_binary": os.environ.get("PB_LOCAL_PIPER_BIN", ""),
         "piper_model": os.environ.get("PB_LOCAL_PIPER_MODEL", ""),
     }
-    if any(not value for value in settings.values()):
-        parser.error("explicit local model paths, Ollama model, and agent token required")
+    required = ("control_token", "whisper_model", "piper_binary", "piper_model")
+    if any(not settings[name] for name in required):
+        parser.error("local speech files and agent identity token are required")
+    if not settings["ollama_model"] and not os.environ.get("PB_AGENT_KNOWLEDGE_DB"):
+        parser.error("local Ollama model or approved agent knowledge DB is required")
     asyncio.run(call_human(
         target=args.to, tenant=args.tenant,
         agent_id=args.agent, request_id=args.request_id, **settings,

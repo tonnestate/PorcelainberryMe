@@ -135,7 +135,11 @@ class FakeLLM:
 class FakeTTS:
     sample_rate = 16000
 
+    def __init__(self):
+        self.utterances = []
+
     async def synthesize(self, text):
+        self.utterances.append(text)
         return AudioPacket(pcm(), self.sample_rate)
 
 
@@ -190,15 +194,19 @@ class VoiceLiveKitTests(unittest.IsolatedAsyncioTestCase):
 
         rtc.Room = create_room
         control = FakeControl()
+        tts = FakeTTS()
         worker = LiveKitAgentCall(
             client=control, tenant="tenantA", callee="human1",
-            tts=FakeTTS(), stt=FakeSTT(), llm=FakeLLM(), rtc=rtc,
+            tts=tts, stt=FakeSTT(), llm=FakeLLM(), rtc=rtc,
+            greeting="Guten Tag. Sie sprechen mit dem digitalen Empfang.",
         )
         await asyncio.wait_for(worker.speak("a" * 32), 3)
         self.assertEqual(len(rooms), 1)
         self.assertTrue(rooms[0].published)
         self.assertEqual(rooms[0].disconnect_count, 1)
         self.assertTrue(worker._source.closed)
+        self.assertEqual(tts.utterances[0],
+                         "Guten Tag. Sie sprechen mit dem digitalen Empfang.")
         self.assertEqual(worker._engine.turns_completed, 1)
         self.assertGreaterEqual(control.checks, 2)
 

@@ -1,8 +1,11 @@
 # PorcelainberryMe
 
-Lightweight, Python-first communications infrastructure for FruitStack. The
-library owns transport contracts, signed events and delivery receipts; **not**
-Aurora/AVCOS cognition, AnanasMe UI, TonnEstate CRM records or new AI models.
+Independent, Python-first **headless AI communications platform** built
+for stand-alone SaaS operation. FruitStack, TonnEstate, GreenGrapeMe, AnanasMe
+and Aurora are optional integrations, never product runtime prerequisites.
+The software owns its communication interfaces and AI-call orchestration;
+it does not automatically provide an E.164 telephone carrier or a deployed
+speech/media infrastructure.
 
 **Status:** source prototype on main after merge; offline tests only, not deployed on the VPS. No live media or real AI call verified.
 
@@ -118,3 +121,23 @@ scripts/livekit_audio_smoke.py, but it has not run on the actual VPS or
 validated German speech. See [local agent execution and acceptance](docs/LOCAL_VOICE_AGENT.md) and
 [headless call architecture](docs/HEADLESS_IP_CALLS.md). Public mobile/landline
 numbers remain impossible without a separately funded PSTN interconnect.
+
+### Verified business knowledge — first Fonio-parity capability
+
+The independent AI voice agent now supports a private, tenant-scoped,
+operator-approved company FAQ. Every new or edited answer remains a DRAFT
+until a human explicitly approves that exact revision. Only approved
+questions receive approved business answers. Unknown prompts fall back to
+a safe configured sentence rather than an ungrounded corporate claim.
+Unanswered question recording is disabled by default and can be explicitly
+enabled with bounded retention and purge. No paid API is used.
+
+To activate this in the existing IP voice worker, provision a local
+knowledge profile and configure PB_AGENT_KNOWLEDGE_DB, following
+[approved FAQ setup](docs/AGENT_KNOWLEDGE.md). This strict exact-match
+knowledge capability does not yet provide semantic RAG or self-learning.
+See the [Fonio feature-gap and release gates](docs/FONIO_PARITY.md).
+
+Offline tests are required but do not prove deployed speech, real PSTN
+reachability, a working iPhone background notification or commercial
+readiness.
