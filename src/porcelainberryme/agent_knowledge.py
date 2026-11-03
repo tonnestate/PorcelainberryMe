@@ -329,6 +329,10 @@ class ApprovedKnowledgeResponder:
     """
 
     def __init__(self, path: str, tenant: str, assistant: str):
+        # Runtime must not create an empty database and then pretend company
+        # knowledge was provisioned successfully.
+        if not isinstance(path, str) or not Path(path).is_file():
+            raise KnowledgeError("approved_knowledge_database_missing")
         self.store = KnowledgeStore(path)
         self.tenant, self.assistant = _id(tenant), _id(assistant)
         self.store.profile(tenant, assistant)  # fail before dialing if absent
