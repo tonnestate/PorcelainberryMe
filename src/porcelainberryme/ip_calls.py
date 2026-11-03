@@ -285,6 +285,9 @@ class CallRegistry(HandoffMixin):
             )
             self._event(con, call, call["caller"], "TIMED_OUT", now)
             self._event(con, call, call["callee"], "TIMED_OUT", now)
+            handoff = self._handoff_row(con, call["id"])
+            if handoff is not None and handoff["state"] == "CONNECTED":
+                self._event(con, call, handoff["target"], "TIMED_OUT", now)
 
     def _prune_closed_calls(self, con, now):
         # Keep history while media revocation is outstanding. Never delete a
@@ -301,6 +304,7 @@ class CallRegistry(HandoffMixin):
             call_id = row["id"]
             con.execute("DELETE FROM ip_call_events WHERE call_id=?", (call_id,))
             con.execute("DELETE FROM ip_media_teardown WHERE call_id=?", (call_id,))
+            con.execute("DELETE FROM ip_handoff_kicks WHERE call_id=?", (call_id,))
             con.execute("DELETE FROM ip_call_handoffs WHERE call_id=?", (call_id,))
             con.execute("DELETE FROM ip_calls WHERE id=?", (call_id,))
 
@@ -474,6 +478,9 @@ class CallRegistry(HandoffMixin):
                 )
                 for user in (call["caller"], call["callee"]):
                     self._event(con, call, user, target, now)
+                handoff = self._handoff_row(con, call_id)
+                if handoff is not None and handoff["state"] == "CONNECTED":
+                    self._event(con, call, handoff["target"], target, now)
                 changed = con.execute("SELECT * FROM ip_calls WHERE id=?", (call_id,)).fetchone()
                 return self._visible(changed, claims["sub"])
 
@@ -502,6 +509,8 @@ class CallRegistry(HandoffMixin):
                 ).hexdigest()[:24]
                 room = "pb_" + call_id
                 token_expires = min(now + MEDIA_TOKEN_SECONDS, call["expires_at"])
+                if is_staff:
+                    token_expires = min(token_expires, handoff["expires_at"])
                 if token_expires <= now:
                     raise CallError("call_not_accepted", 409)
                 # Remember the last valid media token. A subsequent hangup
@@ -516,6 +525,9 @@ class CallRegistry(HandoffMixin):
                     con.execute(
                         "UPDATE ip_call_handoffs SET media_issued=1 WHERE call_id=?",
                         (call_id,),
+                    )
+                    self._track_staff_media_token(
+                        con, call, claims["sub"], token_expires,
                     )
                 jwt = _jwt({
                     "iss": self.media_key, "sub": participant,
@@ -761,6 +773,7 @@ def main():
                 if terminator is not None:
                     try:
                         registry.reconcile_media(terminator.delete_room)
+                        registry.reconcile_handoff_kicks(terminator.remove_participant)
                     except (sqlite3.Error, OSError) as exc:
                         # Never emit call identities, notes or secrets.
                         print("ip_media_reconcile_error:" + type(exc).__name__,
