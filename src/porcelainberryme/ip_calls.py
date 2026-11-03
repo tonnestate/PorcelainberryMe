@@ -112,19 +112,25 @@ class CallRegistry:
     from request payload fields. Room tokens are minted only after acceptance.
     """
 
-    def __init__(self, path: str, *, identity_secret: str, media_key: str,
-                 media_secret: str, media_url: str,
+    def __init__(self, path: str, *, identity_secret: str, media_key: str | None = None,
+                 media_secret: str | None = None, media_url: str | None = None,
                  clock=None):
         if not isinstance(identity_secret, str) or len(identity_secret) < 32:
             raise ValueError("identity_secret_too_short")
-        if not isinstance(media_key, str) or not media_key.strip():
-            raise ValueError("media_key_required")
-        if not isinstance(media_secret, str) or len(media_secret) < 32:
-            raise ValueError("media_secret_too_short")
-        if not isinstance(media_url, str) or not media_url.startswith(("ws://", "wss://")):
-            raise ValueError("invalid_media_url")
-        if identity_secret == media_secret:
-            raise ValueError("separate_signing_keys_required")
+        # Call control must run without a media service. No fake LiveKit
+        # credentials are required merely to originate/decline a call.
+        provided = [bool(media_key), bool(media_secret), bool(media_url)]
+        if any(provided):
+            if not all(provided):
+                raise ValueError("incomplete_media_configuration")
+            if not isinstance(media_key, str) or not media_key.strip():
+                raise ValueError("media_key_required")
+            if not isinstance(media_secret, str) or len(media_secret) < 32:
+                raise ValueError("media_secret_too_short")
+            if not isinstance(media_url, str) or not media_url.startswith(("ws://", "wss://")):
+                raise ValueError("invalid_media_url")
+            if identity_secret == media_secret:
+                raise ValueError("separate_signing_keys_required")
         self.path = path
         self.identity_secret = identity_secret
         self.media_key = media_key
@@ -326,6 +332,8 @@ class CallRegistry:
                 call = self._get(con, claims["tenant"], claims["sub"], call_id)
                 if call["state"] != "ACTIVE":
                     raise CallError("call_not_accepted", 409)
+                if not (self.media_key and self.media_secret and self.media_url):
+                    raise CallError("media_backend_not_configured", 503)
                 # Opaque identity, unique per call. Do not embed real contact data.
                 participant = "ip_" + hashlib.sha256(
                     (call_id + ":" + claims["tenant"] + ":" + claims["sub"]).encode()
