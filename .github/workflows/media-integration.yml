@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/media-integration.yml'
       - 'scripts/livekit_audio_smoke.py'
+      - 'scripts/voice_agent_network_smoke.py'
       - 'scripts/generate_local_livekit_config.py'
       - 'src/porcelainberryme/ip_calls.py'
       - 'src/porcelainberryme/media_cleanup.py'
@@ -59,6 +60,13 @@ jobs:
           source "$RUNNER_TEMP/pb-local-media/local-media.env"
           set +a
           PYTHONPATH=src python scripts/livekit_audio_smoke.py
+      - name: Verify real autonomous voice-agent turn over WebRTC
+        shell: bash
+        run: |
+          set -a
+          source "$RUNNER_TEMP/pb-local-media/local-media.env"
+          set +a
+          PYTHONPATH=src python scripts/voice_agent_network_smoke.py
       - name: Diagnose and remove local LiveKit test container
         if: always()
         run: |
