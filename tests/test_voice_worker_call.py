@@ -69,7 +69,8 @@ class OutboundAgentTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "knowledge.sqlite")
             store = KnowledgeStore(path)
-            store.configure("tenantA", "agentA")
+            store.configure("tenantA", "agentA",
+                            greeting="Guten Tag vom Firmenassistenten.")
             store.propose(
                 "tenantA", "agentA", key="opening",
                 question="Wann ist geöffnet?", answer="Von neun bis fünf.",
@@ -103,6 +104,7 @@ class OutboundAgentTests(unittest.IsolatedAsyncioTestCase):
                 def __init__(self, **kwargs):
                     self.llm = kwargs["llm"]
                     observed.append(("llm_type", type(self.llm).__name__))
+                    observed.append(("greeting", kwargs["greeting"]))
 
                 async def speak(self, call_id):
                     observed.append(("approved_answer", await self.llm.respond(
@@ -130,6 +132,7 @@ class OutboundAgentTests(unittest.IsolatedAsyncioTestCase):
                 )
             self.assertIn(("dial", "humanA"), observed)
             self.assertIn(("llm_type", "ApprovedKnowledgeResponder"), observed)
+            self.assertIn(("greeting", "Guten Tag vom Firmenassistenten."), observed)
             self.assertIn(("approved_answer", "Von neun bis fünf."), observed)
             self.assertIn(("unapproved_answer",
                            "Dazu habe ich keine freigegebene Information. "
