@@ -2,7 +2,7 @@
 
 ## Status (2026-11-03)
 
-The code on feature branch feat/headless-ip-calls now connects **an AI-initiated, explicitly accepted Internet call** to actual LiveKit RTC microphone frames and locally installed speech backends. Source-level, offline tests prove its wiring. **There has NOT been a live call on the user's server**, nor a verified German listening test, CPU/memory benchmark, NAT/TURN assessment or phone-style iOS background notification. This is not yet a production phone service.
+The main branch includes an AI-initiated Internet calling path with local speech adapters. **Real WebRTC transport and actual LiveKitAgentCall/VoiceTurnEngine integration have now passed in PR CI** using an isolated self-hosted LiveKit server with locally faked STT/LLM/TTS content. No real German model conversation or live user-VPS deployment has been demonstrated; real iPhone background notifications, NAT/TURN and production server capacity remain unverified. This is not yet a production phone service. See [verified media evidence](REAL_MEDIA_EVIDENCE.md).
 
 This worker is **PorcelainberryMe itself**, not a dependency on AnanasMe, Aurora, GreenGrapeMe or TonnEstate. External apps may trigger its call-control API but are never required for it to run. It does not contact a paid AI provider, does not request an OpenAI key, and does not connect to PSTN or a SIP carrier.
 
@@ -18,7 +18,7 @@ This worker is **PorcelainberryMe itself**, not a dependency on AnanasMe, Aurora
 8. An existing Piper executable and ONNX model synthesize local 16-bit mono audio. The worker publishes 20 ms PCM frames via LiveKit's AudioSource and LocalAudioTrack. Successful completed turns are kept as a bounded in-memory conversational history for that call only.
 9. The worker observes call-control termination and disconnects. The call server's durable room teardown outbox ensures asynchronous media cleanup.
 
-The above makes real WebRTC audio **possible when all dependencies and models are actually installed**, but does not prove the live deployment or acceptable natural language latency. The current Piper path synthesizes each answer before playback; it is *not* token-by-token streaming TTS. The energy detector is a minimal first pass, not a certified conversational VAD.
+Real self-hosted WebRTC audio is now verified in isolated CI using synthetic PCM and local speech stand-ins. This does **not** establish acceptable German model audio quality or latency on the user VPS. The current Piper path synthesizes each answer before playback; it is *not* token-by-token streaming TTS. The energy detector is a minimal first pass, not a certified conversational VAD.
 
 ## Zero-licensing-fee prerequisites, NOT automatically installed
 
@@ -99,7 +99,7 @@ connected sessions but is not a high-availability failover mechanism.
 - clients/browser/ip_calls_client.mjs
 - docs/HEADLESS_IP_CALLS.md
 
-Run Python 3.11/3.12 offline tests using the repository workflow. Real media remains unverified because no actual self-hosted LiveKit server, models or microphone are attached to the test run.
+Python 3.11/3.12 offline tests continue to run. A separate PR-only workflow now starts LiveKit v1.13.11 and verifies both real WebRTC transport and the real autonomous agent pipeline with local fake STT/LLM/TTS. See [CI media evidence](REAL_MEDIA_EVIDENCE.md). No microphone, customer VPS or real speech weights were used.
 
 Technical donor references (source/licensing must be reviewed in the target deployment):
 
@@ -119,8 +119,10 @@ and requires at least five nonzero PCM frames at the other endpoint.
 The test also reconciles media termination through the join-token expiry.
 No public telephone number, microphone recording or paid API is used.
 
-The test is not automatically run in CI and has not been executed on the
-user VPS. Offline Python/Node CI passing is not proof of live audio.
+This test now runs automatically on relevant pull requests against a fresh
+self-hosted LiveKit server and has passed. A second test executes the actual
+voice agent with fake local STT/LLM/TTS and real RTC audio. Neither has run
+on the user's VPS or validated German speech model performance.
 
 Provide an already running self-hosted LiveKit instance with private key
 and secret, on a capacity-tested machine. Then:
