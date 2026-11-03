@@ -16,7 +16,7 @@ Sources:
 | Function | Fonio public claim | PorcelainberryMe as of this change | Release gate |
 | --- | --- | --- | --- |
 | Ordinary PSTN numbers (inbound/outbound) | Yes, number/SIP/carrier plans | NO PSTN access; only Internet identities | Carrier interconnect required; impossible to claim free PSTN from Internet alone |
-| Real incoming calls | Yes | NEW: opt-in PWA Web Push and authenticated, unstyled first-party browser call controls (accept/decline/hangup/reconnect) integrated with self-hosted LiveKit; no native CallKit or measured iPhone delivery | Secure host login, deployable app/build, real iPhone acceptance, remote TURN/TLS |
+| Real incoming calls | Yes | NEW: trusted inbound AI Internet identity autoaccepts human-originated calls under a crash-fenced lease and enters the original self-hosted LiveKit room; first-party browser controls and opt-in PWA Web Push already included | Real Whisper/Ollama/Piper listening, installed iPhone acceptance, TLS/TURN production, public PSTN interconnect |
 | Outbound AI calls | Yes on supported plans | Real media CI verifies IP origination, acceptance and actual LiveKit voice-agent PCM with local fake speech providers; no PSTN numbers | Installed real models, human call quality, outbound consent UX, caller abuse testing |
 | Low-latency natural conversation | Yes | Real self-hosted PCM transport and full agent pipeline proven with synthetic audio; natural model latency and turn quality remain unverified | German Whisper/Ollama/Piper audio and interruption measurements |
 | Many voices/languages | 120+ voices, 60+ languages listed | One explicitly installed local Piper voice; German local STT setting | Model inventory, licenses, pronunciation, tests |
@@ -111,3 +111,17 @@ PorcelainberryMe now has an optional self-hosted VAPID Web Push sender, durable 
 ## Browser call console milestone
 
 The existing IPCallClient has a minimal first-party UI controller (clients/browser/call_console.mjs) that requires an authenticated host-provided identity token. It explicitly accepts/rejects incoming calls and staff handoffs, starts outbound Internet-identity calls, connects microphone/remote audio to LiveKit only after a user action, supports manual reconnection and verifies every incoming push call ID against current server state. The component is deliberately unstyled and does not create another app, an unsafe demo login or token storage. See docs/BROWSER_CALL_CONSOLE.md. A complete, deployed login/signup/PWA package and real mobile acceptance remain OPEN.
+
+
+## Autonomous inbound AI reception
+
+A verified human may now dial an operator-enabled AI Internet identity and be
+answered by the existing local WebRTC voice engine. The backend uses a
+transactional fenced 15-second AI worker lease with crash recovery and
+server-authorized media tokens; the self-hosted AI worker continuously
+renews it before and during RTC media connection. Approved company
+knowledge, local appointments, per-call notes and employee takeover
+are reused for both outgoing and **incoming** AI conversations. Real
+isolated LiveKit CI tests use synthetic STT/LLM/TTS outputs; there is
+no proven true German phone call quality or E.164 number access.
+See docs/INBOUND_AI_RECEPTION.md.
