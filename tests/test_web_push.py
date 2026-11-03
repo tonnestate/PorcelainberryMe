@@ -282,6 +282,67 @@ class PushIntegrationTests(unittest.TestCase):
             {"device_id": "a" * 32},
         ), (200, {"enabled": False, "removed": True}))
 
+    def test_real_sender_adapter_uses_minimal_encrypted_push_protocol(self):
+        import sys
+        from types import ModuleType
+        from unittest.mock import patch
+        from porcelainberryme.web_push import make_web_push_sender
+
+        keyfile = Path(self.folder.name) / "vapid-private.pem"
+        keyfile.write_text("only-for-local-mock-test", encoding="utf-8")
+        calls = []
+        fake = ModuleType("pywebpush")
+        class Failure(Exception):
+            def __init__(self, status_code):
+                self.status_code = status_code
+
+        def delivery(**kwargs):
+            calls.append(kwargs)
+            if kwargs["subscription_info"]["endpoint"].endswith("/gone"):
+                raise Failure(410)
+        fake.webpush = delivery
+        fake.WebPushException = Failure
+        with patch.dict(sys.modules, {"pywebpush": fake}):
+            send = make_web_push_sender(str(keyfile), "mailto:ops@example.org")
+            sub = self.subscription()
+            payload = {"type": "incoming_ip_call",
+                       "call_id": "a" * 32, "kind": "RINGING"}
+            send({"endpoint": sub["endpoint"], "keys": sub["keys"]},
+                 payload, 15)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(json.loads(calls[0]["data"]), payload)
+            self.assertEqual(calls[0]["vapid_private_key"], str(keyfile))
+            self.assertEqual(calls[0]["vapid_claims"], {
+                "sub": "mailto:ops@example.org",
+            })
+            self.assertEqual(calls[0]["ttl"], 15)
+            self.assertEqual(calls[0]["timeout"], 3.0)
+            with self.assertRaises(ExpiredPushEndpoint):
+                send({"endpoint": sub["endpoint"] + "/gone",
+                      "keys": sub["keys"]}, payload, 15)
+
+    def test_worker_does_not_expose_subscription_keys_to_http_client(self):
+        self.register()
+        call = self.ring()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.db))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        token = mint_identity_token(
+            self.secret, self.human["tenant"], self.human["sub"],
+            self.human["role"], now=self.time[0],
+        )
+        request = Request(
+            f"http://127.0.0.1:{server.server_port}/v1/ip-calls/events",
+            headers={"Authorization": "Bearer " + token},
+        )
+        with urlopen(request, timeout=2) as response:
+            payload = response.read().decode("utf-8")
+        self.assertIn(call["id"], payload)
+        self.assertNotIn("web.push.apple.com", payload)
+        self.assertNotIn(self.subscription()["keys"]["p256dh"], payload)
+
     def test_invalid_public_key_rejected_on_startup(self):
         with self.assertRaisesRegex(ValueError, "invalid_vapid_public_key"):
             validate_public_key("not-real")
