@@ -518,6 +518,16 @@ class AppointmentVoiceResponder:
                 f"Der Termin am {local:%d.%m.%Y} um {local:%H:%M} Uhr ist "
                 "verbindlich in unserem Kalender gebucht."
             )
+        if normalized in {"ja", "ja bitte", "ok", "okay", "einverstanden"}:
+            if self._pending is not None:
+                return "Bitte bestätigen Sie ausdrücklich mit: Ja, Termin buchen."
+            if self._cancel_pending is not None:
+                return "Bitte bestätigen Sie ausdrücklich mit: Ja, Termin stornieren."
+        # Any unrelated statement, time correction or new task invalidates
+        # the former unconfirmed action. A later "Ja, Termin buchen" must
+        # never commit a slot that the caller has already corrected.
+        self._pending = None
+        self._cancel_pending = None
         intent = any(word in normalized.split() for word in (
             "termin", "terminbuchung", "buchen", "buchung",
             "reservieren", "frei", "verfügbar",
@@ -571,11 +581,6 @@ class AppointmentVoiceResponder:
                 "Bitte nennen Sie ein eindeutiges Datum mit Uhrzeit, "
                 "zum Beispiel: Termin am 09.11.2026 um 14 Uhr."
             )
-        if normalized in {"ja", "ja bitte", "ok", "okay", "einverstanden"}:
-            if self._pending is not None:
-                return "Bitte bestätigen Sie ausdrücklich mit: Ja, Termin buchen."
-            if self._cancel_pending is not None:
-                return "Bitte bestätigen Sie ausdrücklich mit: Ja, Termin stornieren."
         return await self.fallback.respond(text, history)
 
 
