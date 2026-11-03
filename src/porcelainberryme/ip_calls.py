@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from .ip_handoff import HandoffMixin
+from .web_push import PushMixin, validate_public_key
 
 IDENTITY = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 IDEMPOTENCY = re.compile(r"^[A-Za-z0-9_.:-]{8,128}$")
@@ -116,7 +117,7 @@ def verify_identity_token(token: str, secret: str, *, now: int | None = None) ->
         raise CallError("unauthorized", 401) from exc
 
 
-class CallRegistry(HandoffMixin):
+class CallRegistry(HandoffMixin, PushMixin):
     """SQLite transactions serialize invitations, acceptance and termination.
 
     Client identity is always sourced from a server-verified token, never
@@ -125,7 +126,7 @@ class CallRegistry(HandoffMixin):
 
     def __init__(self, path: str, *, identity_secret: str, media_key: str | None = None,
                  media_secret: str | None = None, media_url: str | None = None,
-                 clock=None):
+                 clock=None, push_public_key: str | None = None):
         if not isinstance(identity_secret, str) or len(identity_secret) < 32:
             raise ValueError("identity_secret_too_short")
         # Call control must run without a media service. No fake LiveKit
@@ -148,6 +149,9 @@ class CallRegistry(HandoffMixin):
         self.media_secret = media_secret
         self.media_url = media_url
         self.clock = clock or time.time
+        self.push_public_key = (
+            validate_public_key(push_public_key) if push_public_key else None
+        )
         with closing(self._conn()) as con:
             con.executescript("""
                 CREATE TABLE IF NOT EXISTS ip_calls (
@@ -184,6 +188,7 @@ class CallRegistry(HandoffMixin):
                 );
             """)
             self._init_handoff_schema(con)
+            self._init_push_schema(con)
             # Existing installations migrate safely in place; previous
             # registration/consent preferences remain unchanged.
             columns = {
@@ -244,11 +249,12 @@ class CallRegistry(HandoffMixin):
         return int(self.clock())
 
     def _event(self, con, call, receiver: str, kind: str, now: int):
-        con.execute(
+        cursor = con.execute(
             "INSERT INTO ip_call_events(call_id, tenant, receiver, kind, created_at) "
             "VALUES(?,?,?,?,?)",
             (call["id"], call["tenant"], receiver, kind, now),
         )
+        self._queue_event_push(con, call, receiver, kind, cursor.lastrowid, now)
         # A hostile or stuck originator must not fill the event database
         # indefinitely. Keep the newest N events for this recipient.
         cutoff = con.execute(
@@ -302,6 +308,7 @@ class CallRegistry(HandoffMixin):
         ).fetchall()
         for row in eligible:
             call_id = row["id"]
+            con.execute("DELETE FROM ip_push_jobs WHERE call_id=?", (call_id,))
             con.execute("DELETE FROM ip_call_events WHERE call_id=?", (call_id,))
             con.execute("DELETE FROM ip_media_teardown WHERE call_id=?", (call_id,))
             con.execute("DELETE FROM ip_handoff_kicks WHERE call_id=?", (call_id,))
@@ -646,6 +653,17 @@ def make_handler(registry: CallRegistry):
                         "tenant": claims["tenant"], "subject": claims["sub"],
                         "role": claims["role"],
                     })
+                if self.command == "GET" and uri.path == "/v1/ip-calls/push/config":
+                    return self._reply(200, registry.push_config())
+                if uri.path == "/v1/ip-calls/push/subscriptions":
+                    if self.command == "POST":
+                        return self._reply(201, registry.register_push(
+                            claims, self._body(),
+                        ))
+                    if self.command == "DELETE":
+                        return self._reply(200, registry.revoke_push(
+                            claims, self._body().get("device_id"),
+                        ))
                 if self.command == "GET" and uri.path == "/v1/ip-calls/events":
                     qs = parse_qs(uri.query)
                     after = int(qs.get("after", ["0"])[0])
@@ -683,6 +701,9 @@ def make_handler(registry: CallRegistry):
             self._request()
 
         def do_POST(self):
+            self._request()
+
+        def do_DELETE(self):
             self._request()
 
         def log_message(self, format, *args):
@@ -732,6 +753,7 @@ def main():
         media_key=os.environ.get("LIVEKIT_API_KEY", ""),
         media_secret=os.environ.get("LIVEKIT_API_SECRET", ""),
         media_url=os.environ.get("LIVEKIT_URL", ""),
+        push_public_key=os.environ.get("PB_WEBPUSH_PUBLIC_KEY", ""),
     )
     if args.cmd == "enroll":
         registry.provision(args.tenant, args.subject, allow_agent_calls=args.allow_agent_calls)
@@ -765,7 +787,15 @@ def main():
         from .call_notes import CallNotesStore
         notes = CallNotesStore(notes_path)
 
-    if terminator is not None or notes is not None:
+    push_sender = None
+    if registry.push_public_key:
+        from .web_push import make_web_push_sender
+        push_sender = make_web_push_sender(
+            os.environ.get("PB_WEBPUSH_PRIVATE_KEY", ""),
+            os.environ.get("PB_WEBPUSH_CONTACT", ""),
+        )
+
+    if terminator is not None or notes is not None or push_sender is not None:
         def reconcile_loop():
             import sys
             last_notes_sweep = 0.0
@@ -778,6 +808,13 @@ def main():
                         # Never emit call identities, notes or secrets.
                         print("ip_media_reconcile_error:" + type(exc).__name__,
                               file=sys.stderr)
+                if push_sender is not None:
+                    try:
+                        registry.reconcile_push(push_sender)
+                    except (sqlite3.Error, OSError) as exc:
+                        # Credentials, endpoint URLs and subjects are private.
+                        print("ip_webpush_reconcile_error:" + type(exc).__name__,
+                              file=sys.stderr)
                 current = time.monotonic()
                 if notes is not None and current - last_notes_sweep >= 3600:
                     try:
@@ -787,7 +824,8 @@ def main():
                         print("ip_note_retention_error:" + type(exc).__name__,
                               file=sys.stderr)
                 stop.wait(MEDIA_CLEANUP_INTERVAL_SECONDS if
-                          terminator is not None else 3600)
+                          terminator is not None or push_sender is not None
+                          else 3600)
 
         worker = threading.Thread(target=reconcile_loop, daemon=True,
                                   name="ip-control-maintenance")
