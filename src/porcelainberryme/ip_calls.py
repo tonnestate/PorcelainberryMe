@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from .ip_handoff import HandoffMixin
+from .ip_inbound import InboundAgentMixin
 from .web_push import PushMixin, validate_public_key
 
 IDENTITY = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
@@ -117,7 +118,7 @@ def verify_identity_token(token: str, secret: str, *, now: int | None = None) ->
         raise CallError("unauthorized", 401) from exc
 
 
-class CallRegistry(HandoffMixin, PushMixin):
+class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
     """SQLite transactions serialize invitations, acceptance and termination.
 
     Client identity is always sourced from a server-verified token, never
@@ -188,6 +189,7 @@ class CallRegistry(HandoffMixin, PushMixin):
                 );
             """)
             self._init_handoff_schema(con)
+            self._init_inbound_schema(con)
             self._init_push_schema(con)
             # Existing installations migrate safely in place; previous
             # registration/consent preferences remain unchanged.
@@ -311,6 +313,7 @@ class CallRegistry(HandoffMixin, PushMixin):
             con.execute("DELETE FROM ip_push_jobs WHERE call_id=?", (call_id,))
             con.execute("DELETE FROM ip_call_events WHERE call_id=?", (call_id,))
             con.execute("DELETE FROM ip_media_teardown WHERE call_id=?", (call_id,))
+            con.execute("DELETE FROM ip_inbound_leases WHERE call_id=?", (call_id,))
             con.execute("DELETE FROM ip_handoff_kicks WHERE call_id=?", (call_id,))
             con.execute("DELETE FROM ip_call_handoffs WHERE call_id=?", (call_id,))
             con.execute("DELETE FROM ip_calls WHERE id=?", (call_id,))
@@ -462,11 +465,19 @@ class CallRegistry(HandoffMixin, PushMixin):
                 call = self._get(con, claims["tenant"], claims["sub"], call_id)
                 if decision in ("accept", "decline") and claims["sub"] != call["callee"]:
                     raise CallError("only_recipient_can_decide", 403)
+                # An AI recipient must use a lease-fenced inbound claim
+                # rather than an untracked direct acceptance/hangup.
+                if (claims["role"] == "agent" and call["callee"] == claims["sub"]
+                        and not call["agent"]):
+                    raise CallError("inbound_agent_lease_required", 403)
                 if decision == "hangup":
                     handoff = self._handoff_row(con, call_id)
                     allowed = (call["caller"], call["callee"])
                     if handoff is not None and handoff["state"] == "CONNECTED":
-                        allowed = (call["callee"], handoff["target"])
+                        # The human remains authorized after the AI leaves,
+                        # regardless of which side originated the call.
+                        human = call["callee"] if call["agent"] else call["caller"]
+                        allowed = (human, handoff["target"])
                     if claims["sub"] not in allowed:
                         raise CallError("not_authorized_to_hangup", 403)
                 target = {"accept": "ACTIVE", "decline": "DECLINED",
@@ -687,6 +698,17 @@ def make_handler(registry: CallRegistry):
                             return self._reply(201, registry.offer_handoff(
                                 claims, call_id, idempotency_key=body.get("idempotency_key")))
                     if (len(parts) == 5 and self.command == "POST"
+                            and parts[3] == "inbound"):
+                        if parts[4] == "claim":
+                            return self._reply(200, registry.claim_inbound(
+                                claims, call_id))
+                        if parts[4] == "heartbeat":
+                            return self._reply(200, registry.heartbeat_inbound(
+                                claims, call_id, self._body().get("lease")))
+                        if parts[4] == "finish":
+                            return self._reply(200, registry.finish_inbound(
+                                claims, call_id, self._body().get("lease")))
+                    if (len(parts) == 5 and self.command == "POST"
                             and parts[3] == "handoff"
                             and parts[4] in ("accept", "decline", "cancel", "complete")):
                         return self._reply(200, registry.decide_handoff(
@@ -725,6 +747,12 @@ def main():
     dnd.add_argument("--subject", required=True)
     dnd.add_argument("--enabled", action="store_true")
     dnd.add_argument("--disabled", action="store_true")
+    incoming = sub.add_parser(
+        "inbound-agent", help="Trusted operator: enable AI to answer Internet calls")
+    incoming.add_argument("--tenant", required=True)
+    incoming.add_argument("--assistant", required=True)
+    incoming.add_argument("--enabled", action="store_true")
+    incoming.add_argument("--disabled", action="store_true")
     handoff = sub.add_parser(
         "handoff-route", help="Trusted operator: map AI identity to human staff")
     handoff.add_argument("--tenant", required=True)
@@ -762,6 +790,13 @@ def main():
         if args.enabled == args.disabled:
             parser.error("select exactly one of --enabled or --disabled")
         registry.set_do_not_disturb(args.tenant, args.subject, args.enabled)
+        return
+    if args.cmd == "inbound-agent":
+        if args.enabled == args.disabled:
+            parser.error("select exactly one of --enabled or --disabled")
+        registry.configure_inbound_agent(
+            args.tenant, args.assistant, args.enabled,
+        )
         return
     if args.cmd == "handoff-route":
         if args.disable == bool(args.staff):
