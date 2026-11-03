@@ -556,10 +556,38 @@ def main():
         registry.provision(args.tenant, args.subject, allow_agent_calls=args.allow_agent_calls)
         return
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(registry))
+    stop = threading.Event()
+    worker = None
+    if registry.media_url:
+        # Only the configured self-hosted LiveKit is contacted. The worker
+        # reclaims rooms on hangup, timeout and restart, without paid APIs.
+        from .media_cleanup import LiveKitRoomTerminator
+
+        terminator = LiveKitRoomTerminator(
+            registry.media_url, registry.media_key, registry.media_secret,
+        )
+
+        def reconcile_loop():
+            import sys
+            while not stop.is_set():
+                try:
+                    registry.reconcile_media(terminator.delete_room)
+                except (sqlite3.Error, OSError) as exc:
+                    # Never emit call identities or secrets into the log.
+                    print("ip_media_reconcile_error:" + type(exc).__name__,
+                          file=sys.stderr)
+                stop.wait(MEDIA_CLEANUP_INTERVAL_SECONDS)
+
+        worker = threading.Thread(target=reconcile_loop, daemon=True,
+                                  name="ip-media-reconcile")
+        worker.start()
     try:
         server.serve_forever()
     finally:
+        stop.set()
         server.server_close()
+        if worker is not None:
+            worker.join(timeout=5)
 
 
 if __name__ == "__main__":
