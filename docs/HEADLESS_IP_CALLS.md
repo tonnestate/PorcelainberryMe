@@ -51,6 +51,14 @@ Create role credentials LOCALLY, not through HTTP:
 
 The API binds ONLY to 127.0.0.1:8874 and is not accessible from remote browsers until a separately secured HTTPS reverse proxy is configured. If LIVEKIT variables are unset, call setup and consent work but /media-token returns 503 media_backend_not_configured instead of inventing a functioning media server. LIVEKIT_URL specifies a separate independently operated instance: merely providing a URL does not start a media server.
 
+## Optional browser adapter for a future end-user app
+
+The headless JavaScript adapter in clients/browser/ip_calls_client.mjs can be embedded in a browser/PWA or packaged mobile front end without requiring a particular UI design. It supports agent-initiated invite polling, explicit accept/decline, hangup, and a LiveKit microphone session after acceptance. Its onCallEvent and onRemoteAudio callbacks are owned by the consuming application, not a hidden FruitStack or CRM UI.
+
+It does not ship a UI, place a call to the public telephone network or install a hosted provider. Install the open-source livekit-client NPM library in the consuming app when actual media is needed; the adapter loads it only at connection time. A test client can inject a fake roomFactory for offline tests. The caller must use its own playback element for remote tracks and obtain browser microphone permission.
+
+The code and Node built-in tests are source-level integration checks; no live audio, browser permission prompts, NAT traversal, suspended iPhone background ringing or app installation has been verified.
+
 ## Production gating: do not misrepresent this branch
 
 - Real self-hosted LiveKit deployment, TURN where needed, two-way audio and observed latency remain UNTESTED. A valid token is not proof of media connectivity.
