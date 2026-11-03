@@ -188,3 +188,8 @@ An operator may configure one approved employee per tenant/assistant. After an e
 ### Optional Web Push for installed first-party PWAs
 
 A new opt-in Web Push path queues incoming Internet call/staff handoff alerts durably in the existing SQLite call registry and delivers VAPID-signed, encrypted notifications to a user's enrolled first-party browser devices. The PWA service worker displays a visible alert and opens the same-origin app for explicit accept/decline. No paid notification vendor, telephone carrier or automatic microphone access is required. Apple Home Screen web apps can receive Web Push from iOS 16.4, but **neither reliable live iPhone delivery nor native CallKit ringing has been demonstrated**. See [PWA Web Push](docs/WEB_PUSH_CALLS.md).
+
+
+### First-party, unstyled Internet call console
+
+The existing browser SDK now ships a minimal embeddable **authenticated call console** (clients/browser/call_console.mjs). It implements verified incoming/outgoing calls, explicit acceptance/decline/hangup, accepted employee handoffs, self-hosted WebRTC microphone and remote audio, permission-aware reconnection, safe Web Push click resume, and click-only notification subscriptions. It does not store access tokens in URLs/localStorage or automatically answer a push. The host must supply a genuine signed in-memory identity token, locally bundled LiveKit browser SDK and already-authorized HTML root. The source does not contain a complete hosted login system or iOS deployment. See [call console integration](docs/BROWSER_CALL_CONSOLE.md).
