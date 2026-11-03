@@ -161,6 +161,48 @@ class PreferenceTests(unittest.TestCase):
         self.assertEqual(self.registry.status(
             self.customer, inbound["id"])["state"], "ENDED")
 
+    def test_active_snapshot_recovers_unanswered_ringing_and_active_calls(self):
+        created = self.registry.originate(
+            self.friend, "customer", "recover-call-0001",
+        )
+        self.assertEqual(
+            [row["id"] for row in self.registry.active_calls(self.customer)["calls"]],
+            [created["id"]],
+        )
+        self.assertEqual(self.registry.active_calls(self.agent)["calls"], [])
+        self.assertEqual(self.registry.active_calls({
+            "tenant": "tenant2", "sub": "customer", "role": "human",
+        })["calls"], [])
+        self.registry.decide(self.customer, created["id"], "accept")
+        active = self.registry.active_calls(self.customer)
+        self.assertEqual(active["calls"][0]["state"], "ACTIVE")
+        self.registry.decide(self.friend, created["id"], "hangup")
+        self.assertEqual(self.registry.active_calls(self.customer)["calls"], [])
+
+    def test_active_snapshot_contains_offered_staff_handoff_without_leak(self):
+        self.registry.configure_handoff_route("tenant1", "agent", "friend")
+        self.registry.update_preferences(
+            self.customer, {"allow_agent_calls": True},
+        )
+        outgoing = self.registry.originate(
+            self.agent, "customer", "handoff-snapshot-01",
+        )
+        self.registry.decide(self.customer, outgoing["id"], "accept")
+        offered = self.registry.offer_handoff(
+            self.agent, outgoing["id"], idempotency_key="handoff-snap-01",
+        )
+        self.assertEqual(offered["state"], "OFFERED")
+        staff_snapshot = self.registry.active_calls(self.friend)
+        self.assertEqual(len(staff_snapshot["calls"]), 1)
+        self.assertEqual(staff_snapshot["calls"][0]["id"], outgoing["id"])
+        self.assertEqual(staff_snapshot["calls"][0]["peer"], "customer")
+        self.registry.decide_handoff(self.friend, outgoing["id"], "decline")
+        self.assertEqual(self.registry.active_calls(self.friend)["calls"], [])
+        self.assertEqual(
+            self.registry.active_calls(self.customer)["calls"][0]["state"],
+            "ACTIVE",
+        )
+
     def test_terminal_call_may_release_old_lease_without_hangup(self):
         self.registry.configure_inbound_agent("tenant1", "agent", True)
         inbound = self.registry.originate(
