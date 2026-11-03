@@ -63,10 +63,11 @@ The code and Node built-in tests are source-level integration checks; no live au
 
 - Real self-hosted LiveKit deployment, TURN where needed, two-way audio and observed latency remain UNTESTED. A valid token is not proof of media connectivity.
 - A locally executing AI voice agent using this API is NOT YET WIRED. An agent can trigger a call invitation through the existing API, but cannot yet speak autonomously through it.
-- Accept/hangup updates the call-control state; it does NOT presently eject already connected participants from the LiveKit room. Add verified room teardown/revocation and recovery before exposing this externally.
+- **Implemented, offline-tested:** A durable LiveKit room-teardown outbox is queued on hangup and active-call timeout. The existing headless server starts a supervised 2-second reconciliation worker if self-hosted LiveKit is configured; it sends authenticated Twirp RoomService/DeleteRoom requests, which forcibly disconnect active participants. Failed requests are retried after persisted delays, including after process restart. LiveKit returns a typed not_found response when the room already does not exist; a generic HTTP 404 is never treated as success.
+- **Residual revocation window:** livekit-server can create a room again if a still-valid join token is presented. Media tokens now expire after at most 12 seconds; successful room deletion repeats every 2 seconds through expiry plus 5 seconds of clock allowance. Therefore an ended call is not guaranteed to become silent instantly, and no strong zero-millisecond revocation guarantee is claimed. Live media behavior, server connectivity and forced audio disconnection still require a real two-party end-to-end test on self-hosted infrastructure. The current endpoint returns call-control termination before remote media teardown is confirmed.
 - Browser polling cannot ring a sleeping mobile handset. An independent consent-aware push and mobile client protocol is needed.
 - Rate limits, global concurrency ceilings, account enrolment, device authentication, event retention, explicit consent/DND policies, privacy audits, abuse prevention, host load tests and crash-recovery behavior are missing.
-- An offline test suite covers state transitions, tenant isolation, explicit enrollment/agent-call opt-in, agent origination, JWT permissions, duplicate rejection, expiration and API handling. It does NOT establish a working PSTN call or live WebRTC audio.
+- The expanded offline tests cover state transitions, identity and tenant isolation, explicit enrollment/opt-in, AI-originated ringing, JWT issuance, token expiry, actual LiveKit Twirp protocol shape via an injected test HTTP adapter, durable teardown on hangup and timeout, retries after network failure, and reconciliation after database restart. It does NOT establish a working PSTN call or live WebRTC audio.
 
 This is a first actual **internet call control implementation**, not a completed telephone provider, and must remain a feature branch until its production gates are satisfied.
 
@@ -76,3 +77,14 @@ This is a first actual **internet call control implementation**, not a completed
 - https://docs.livekit.io/home/server/generating-tokens
 - https://docs.livekit.io/deploy/custom/deployments/
 - https://github.com/livekit/sip (optional SIP bridge; does not provide free PSTN termination)
+
+
+## Free self-hosted media teardown contract
+
+With LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET configured to a server under your control, PorcelainberryMe uses no additional cloud account or paid SDK for media cleanup. Its own server runs a dedicated bounded reconciliation thread. The LiveKit admin credential is kept server-side and is **never** returned to browser clients. The only elevated VideoGrant used by cleanup is roomCreate, required by DeleteRoom.
+
+The call API remains loopback-only. The HTTP response to hangup confirms the **call-control** transition, not that media has already been disconnected. The cleanup journal persists outstanding work in SQLite, with lease recovery and retries after process restart. Inspect server logs for ip_media_reconcile_error and monitor the database in staging before production.
+
+The implementation deliberately avoids assuming an ordinary phone number or an incoming PSTN trunk. Media cleanup does not confer carrier connectivity.
+
+Verified protocol: https://docs.livekit.io/reference/other/roomservice-api/
