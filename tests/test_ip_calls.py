@@ -34,6 +34,9 @@ class InternetCallsTest(unittest.TestCase):
         self.bob = {"tenant": "tenant_a", "sub": "bob", "role": "human"}
         self.agent = {"tenant": "tenant_a", "sub": "assistant", "role": "agent"}
         self.outsider = {"tenant": "tenant_b", "sub": "bob", "role": "human"}
+        self.store.provision("tenant_a", "alice")
+        self.store.provision("tenant_a", "bob", allow_agent_calls=True)
+        self.store.provision("tenant_a", "assistant")
 
     def _ring(self, caller=None, callee="bob", idem="call-request-0001"):
         return self.store.originate(caller or self.alice, callee, idem)
@@ -78,6 +81,15 @@ class InternetCallsTest(unittest.TestCase):
             self.store.decide(self.alice, ringing["id"], "accept")
         with self.assertRaisesRegex(CallError, "call_not_found"):
             self.store.media_credentials(self.outsider, ringing["id"])
+
+    def test_agent_requires_explicit_consent_and_enrollment(self):
+        self.store.provision("tenant_a", "bob", allow_agent_calls=False)
+        with self.assertRaisesRegex(CallError, "agent_call_not_opted_in"):
+            self._ring(self.agent)
+        self.store.provision("tenant_a", "bob", allow_agent_calls=True)
+        self.assertEqual(self._ring(self.agent)["state"], "RINGING")
+        with self.assertRaisesRegex(CallError, "account_not_enrolled"):
+            self._ring(self.alice, callee="unregistered", idem="different-request-002")
 
     def test_replay_conflict_and_concurrent_busy(self):
         created = self._ring()
