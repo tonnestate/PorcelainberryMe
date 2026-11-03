@@ -26,17 +26,26 @@ from .local_voice import (
 class CallControlClient:
     """Authenticate to PorcelainberryMe's loopback-only headless API."""
 
-    def __init__(self, token: str, *, timeout: float = 5):
-        if not isinstance(token, str) or not token:
+    def __init__(self, token: str, *, timeout: float = 5,
+                 token_factory=None):
+        if (not isinstance(token, str) or
+                not (token or callable(token_factory))):
             raise ValueError("agent_control_token_required")
+        if token_factory is not None and not callable(token_factory):
+            raise ValueError("invalid_agent_token_factory")
         self.token = token
+        self.token_factory = token_factory
+        self.inbound_lease = None
         self.timeout = timeout
 
     def _request(self, method: str, path: str, payload=None):
         conn = http.client.HTTPConnection("127.0.0.1", 8874, timeout=self.timeout)
         try:
             body = None if payload is None else json.dumps(payload).encode()
-            headers = {"Authorization": "Bearer " + self.token}
+            token = self.token_factory() if self.token_factory else self.token
+            if not isinstance(token, str) or not token:
+                raise ValueError("agent_token_factory_returned_no_token")
+            headers = {"Authorization": "Bearer " + token}
             if body is not None:
                 headers["Content-Type"] = "application/json"
             conn.request(method, path, body=body, headers=headers)
@@ -66,17 +75,45 @@ class CallControlClient:
         return await self.request("GET", "/v1/ip-calls/" + call_id)
 
     async def media_token(self, call_id: str):
-        return await self.request("POST", "/v1/ip-calls/" + call_id + "/media-token")
+        payload = {"lease": self.inbound_lease} if self.inbound_lease else None
+        return await self.request(
+            "POST", "/v1/ip-calls/" + call_id + "/media-token", payload,
+        )
+
+    async def inbox(self, after=0):
+        return await self.request("GET", "/v1/ip-calls/events?after=" + str(after))
+
+    async def claim_inbound(self, call_id: str):
+        return await self.request(
+            "POST", "/v1/ip-calls/" + call_id + "/inbound/claim",
+        )
+
+    async def heartbeat_inbound(self, call_id: str, lease: str):
+        return await self.request(
+            "POST", "/v1/ip-calls/" + call_id + "/inbound/heartbeat",
+            {"lease": lease},
+        )
+
+    async def finish_inbound(self, call_id: str, lease: str):
+        return await self.request(
+            "POST", "/v1/ip-calls/" + call_id + "/inbound/finish",
+            {"lease": lease},
+        )
 
     async def offer_handoff(self, call_id: str, idem: str):
-        return await self.request("POST", "/v1/ip-calls/" + call_id + "/handoff",
-                                  {"idempotency_key": idem})
+        payload = {"idempotency_key": idem}
+        if self.inbound_lease:
+            payload["lease"] = self.inbound_lease
+        return await self.request(
+            "POST", "/v1/ip-calls/" + call_id + "/handoff", payload,
+        )
 
     async def change_handoff(self, call_id: str, action: str):
         if action not in ("cancel", "complete"):
             raise ValueError("agent_handoff_action_not_permitted")
+        payload = {"lease": self.inbound_lease} if self.inbound_lease else None
         return await self.request(
-            "POST", "/v1/ip-calls/" + call_id + "/handoff/" + action,
+            "POST", "/v1/ip-calls/" + call_id + "/handoff/" + action, payload,
         )
 
     async def hangup(self, call_id: str):
@@ -172,8 +209,13 @@ class LiveKitAgentCall:
         finally:
             await stream.aclose()
 
-    async def _watch_call(self, call_id):
+    async def _watch_call(self, call_id, heartbeat=None):
+        next_heartbeat = 0.0
         while not self._closed.is_set():
+            if heartbeat is not None and time.monotonic() >= next_heartbeat:
+                # Stale workers disconnect immediately after losing the lease.
+                await heartbeat()
+                next_heartbeat = time.monotonic() + 4.0
             status = await self.client.status(call_id)
             if (status["state"] != "ACTIVE"
                     or (status.get("handoff") or {}).get("state") == "CONNECTED"):
@@ -202,7 +244,7 @@ class LiveKitAgentCall:
             # originator stays connected while staff/retry status resolves.
             return
 
-    async def speak(self, call_id):
+    async def speak(self, call_id, *, heartbeat=None):
         media = await self.client.media_token(call_id)
         self._expected_participant = self.participant_identity(
             call_id, self.tenant, self.callee,
@@ -258,7 +300,9 @@ class LiveKitAgentCall:
             await room.local_participant.publish_track(track, options)
             # Watch state *before* synthesizing the opening greeting.
             # Otherwise slow local TTS could continue after a remote hangup.
-            watcher = asyncio.create_task(self._watch_call(call_id))
+            watcher = asyncio.create_task(self._watch_call(
+                call_id, heartbeat=heartbeat,
+            ))
             waiter = asyncio.create_task(self._closed.wait())
 
             async def greet():
@@ -311,6 +355,45 @@ class LiveKitAgentCall:
                 await persist(call_id, finished_turns)
 
 
+async def prepare_local_voice(*, tenant: str, agent_id: str,
+                              whisper_model: str, ollama_model: str,
+                              piper_binary: str, piper_model: str):
+    """Preflight local speech before accepting or starting a call."""
+    stt = await asyncio.to_thread(LocalFasterWhisper, whisper_model)
+    approved_db = os.environ.get("PB_AGENT_KNOWLEDGE_DB", "").strip()
+    if approved_db:
+        from .agent_knowledge import ApprovedKnowledgeResponder
+        base_llm = ApprovedKnowledgeResponder(approved_db, tenant, agent_id)
+    else:
+        base_llm = LocalOllamaResponder(ollama_model)
+        await base_llm.preflight()
+    tts = LocalPiperVoice(piper_binary, piper_model)
+    return stt, base_llm, tts
+
+
+def make_call_responder(*, base_llm, tenant: str, agent_id: str,
+                        caller: str, client: CallControlClient):
+    """Create a fresh per-call workflow so consent never crosses sessions."""
+    llm = base_llm
+    calendar_db = os.environ.get("PB_APPOINTMENT_DB", "").strip()
+    if calendar_db:
+        from .appointments import AppointmentVoiceResponder
+        llm = AppointmentVoiceResponder(
+            calendar_db, tenant, agent_id, caller, llm,
+        )
+    notes_db = os.environ.get("PB_CALL_NOTES_DB", "").strip()
+    if notes_db:
+        from .call_notes import CallNotesStore, ConsentedNotesResponder
+        llm = ConsentedNotesResponder(
+            llm, CallNotesStore(notes_db),
+            tenant=tenant, assistant=agent_id, caller=caller,
+        )
+    if os.environ.get("PB_ENABLE_STAFF_HANDOFF", "").strip() == "1":
+        from .voice_handoff import HumanHandoffResponder
+        llm = HumanHandoffResponder(llm, client)
+    return llm
+
+
 async def call_human(*, target: str, tenant: str, control_token: str,
                      whisper_model: str, ollama_model: str,
                      piper_binary: str, piper_model: str,
@@ -322,44 +405,17 @@ async def call_human(*, target: str, tenant: str, control_token: str,
         raise ValueError("stable_request_id_required")
     from livekit import rtc  # optional installed open-source Python SDK
 
-    # Fail before dialing if local speech components are absent.
-    stt = await asyncio.to_thread(LocalFasterWhisper, whisper_model)
-    approved_db = os.environ.get("PB_AGENT_KNOWLEDGE_DB", "").strip()
-    if approved_db:
-        # Trusted per-agent corporate answers override general-purpose LLM.
-        # Unapproved or unknown company facts never reach the local LLM.
-        from .agent_knowledge import ApprovedKnowledgeResponder
-
-        llm = ApprovedKnowledgeResponder(approved_db, tenant, agent_id)
-    else:
-        llm = LocalOllamaResponder(ollama_model)
-        # Fail before generating a ringing invitation if the local model
-        # is absent, misnamed or unreachable. Never download on demand.
-        await llm.preflight()
-    calendar_db = os.environ.get("PB_APPOINTMENT_DB", "").strip()
-    if calendar_db:
-        # Deterministic local calendar operations require explicit spoken
-        # confirmation. Unknown utterances use the existing safe responder.
-        from .appointments import AppointmentVoiceResponder
-        llm = AppointmentVoiceResponder(
-            calendar_db, tenant, agent_id, target, llm,
-        )
-    notes_db = os.environ.get("PB_CALL_NOTES_DB", "").strip()
-    if notes_db:
-        # Note storage defaults to OFF. Even with a configured database,
-        # this wrapper requires an explicit spoken opt-in in the call.
-        from .call_notes import CallNotesStore, ConsentedNotesResponder
-        llm = ConsentedNotesResponder(
-            llm, CallNotesStore(notes_db),
-            tenant=tenant, assistant=agent_id, caller=target,
-        )
-    tts = LocalPiperVoice(piper_binary, piper_model)
+    # Preflight all local resources before a ringing invitation.
+    stt, base_llm, tts = await prepare_local_voice(
+        tenant=tenant, agent_id=agent_id,
+        whisper_model=whisper_model, ollama_model=ollama_model,
+        piper_binary=piper_binary, piper_model=piper_model,
+    )
     client = CallControlClient(control_token)
-    if os.environ.get("PB_ENABLE_STAFF_HANDOFF", "").strip() == "1":
-        # The operator must additionally provision the staff route through
-        # the trusted local CLI. No LLM-selected destination is allowed.
-        from .voice_handoff import HumanHandoffResponder
-        llm = HumanHandoffResponder(llm, client)
+    llm = make_call_responder(
+        base_llm=base_llm, tenant=tenant, agent_id=agent_id,
+        caller=target, client=client,
+    )
     identity = await client.whoami()
     if (identity.get("role") != "agent"
             or identity.get("tenant") != tenant

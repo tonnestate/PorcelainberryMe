@@ -71,3 +71,16 @@ The new PR test scripts/handoff_network_smoke.py verified AI, customer and emplo
     {"result":"REAL_HUMAN_HANDOFF_SAME_ROOM","staff_audio_received":5,"agent_exited_without_hangup":true,"customer_call_remains_active":true,"paid_api_used":false,"pstn_used":false}
 
 This validates the WebRTC control and media transition with synthetic PCM and local fake speech adapters. It does not validate real Whisper/Ollama/Piper language understanding, natural handoff phrasing, end-user mobile app delivery or PSTN access.
+
+
+## Incoming AI receptionist real-media CI (2026-11-03)
+
+The PR-only scripts/inbound_voice_network_smoke.py starts the actual
+self-hosted LiveKit server and PorcelainberryMe control plane, has a
+signed human identity place a call to an operator-enabled AI recipient,
+and lets the persistent inbound AI worker atomically accept the call.
+The worker obtains an authenticated, lease-fenced LiveKit room token,
+transmits a greeting and response, and receives real PCM from the human
+RTC participant. Only speech model contents are local stand-ins. The
+test checks call hangup and actual room teardown, not iPhone or PSTN.
+See docs/INBOUND_AI_RECEPTION.md for deployment and limits.

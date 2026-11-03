@@ -9,6 +9,9 @@ on:
       - 'scripts/livekit_audio_smoke.py'
       - 'scripts/voice_agent_network_smoke.py'
       - 'scripts/handoff_network_smoke.py'
+      - 'scripts/inbound_voice_network_smoke.py'
+      - 'src/porcelainberryme/ip_inbound.py'
+      - 'src/porcelainberryme/voice_inbound_agent.py'
       - 'src/porcelainberryme/ip_handoff.py'
       - 'src/porcelainberryme/voice_handoff.py'
       - 'scripts/generate_local_livekit_config.py'
@@ -77,6 +80,13 @@ jobs:
           source "$RUNNER_TEMP/pb-local-media/local-media.env"
           set +a
           PYTHONPATH=src python scripts/handoff_network_smoke.py
+      - name: Verify incoming customer-to-AI automatic answering over real WebRTC
+        shell: bash
+        run: |
+          set -a
+          source "$RUNNER_TEMP/pb-local-media/local-media.env"
+          set +a
+          PYTHONPATH=src python scripts/inbound_voice_network_smoke.py
       - name: Diagnose and remove local LiveKit test container
         if: always()
         run: |

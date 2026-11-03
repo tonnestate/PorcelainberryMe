@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import closing
 import hashlib
+import hmac
 
 HANDOFF_OFFER_SECONDS = 45
 HANDOFF_JOIN_SECONDS = 60
@@ -92,6 +93,10 @@ class HandoffMixin:
 
     def _handoff_with_call(self, con, call, viewer):
         result = self._visible(call, viewer)
+        handoff = self._handoff_row(con, call["id"])
+        if handoff is not None and viewer == handoff["target"]:
+            # An employee must see the actual customer, not the AI identity.
+            result["peer"] = call["callee"] if call["agent"] else call["caller"]
         if call["state"] == "ACTIVE":
             result["handoff"] = self._handoff_visible(
                 self._handoff_row(con, call["id"])
@@ -115,7 +120,22 @@ class HandoffMixin:
             for user in (call["caller"], call["callee"], call["handoff_staff"]):
                 self._event(con, call, user, "HANDOFF_EXPIRED", now)
 
-    def offer_handoff(self, claims, call_id, *, idempotency_key):
+    @staticmethod
+    def _verify_inbound_agent_lease(con, call, claims, lease, now):
+        from .ip_calls import CallError
+        if call["agent"]:
+            return
+        row = con.execute(
+            "SELECT lease,expires_at FROM ip_inbound_leases WHERE call_id=?",
+            (call["id"],),
+        ).fetchone()
+        if (claims["role"] != "agent"
+                or not isinstance(lease, str) or row is None
+                or not hmac.compare_digest(row["lease"], lease)
+                or row["expires_at"] <= now):
+            raise CallError("inbound_lease_lost", 409)
+
+    def offer_handoff(self, claims, call_id, *, idempotency_key, lease=None):
         """Only the originating AI identity may offer a configured human."""
         from .ip_calls import CallError, IDEMPOTENCY
         if claims["role"] != "agent":
@@ -127,8 +147,10 @@ class HandoffMixin:
         with closing(self._open()) as con:
             with con:
                 call = self._get(con, claims["tenant"], claims["sub"], call_id)
-                if call["caller"] != claims["sub"] or not call["agent"]:
+                owner = call["caller"] if call["agent"] else call["callee"]
+                if claims["sub"] != owner:
                     raise CallError("only_originating_agent_can_transfer", 403)
+                self._verify_inbound_agent_lease(con, call, claims, lease, now)
                 if call["state"] != "ACTIVE":
                     raise CallError("handoff_requires_active_call", 409)
                 old = self._handoff_row(con, call_id)
@@ -141,7 +163,7 @@ class HandoffMixin:
                 route = con.execute(
                     "SELECT staff FROM ip_handoff_routes "
                     "WHERE tenant=? AND assistant=?",
-                    (call["tenant"], call["caller"]),
+                    (call["tenant"], owner),
                 ).fetchone()
                 if route is None:
                     raise CallError("handoff_route_not_configured", 409)
@@ -178,7 +200,7 @@ class HandoffMixin:
                     "target=excluded.target,state='OFFERED',"
                     "idem=excluded.idem,created_at=excluded.created_at,"
                     "expires_at=excluded.expires_at,media_issued=0,connected_at=NULL",
-                    (call_id, call["tenant"], call["caller"], target,
+                    (call_id, call["tenant"], owner, target,
                      idempotency_key, now, expires),
                 )
                 for recipient in (call["caller"], call["callee"], target):
@@ -189,7 +211,7 @@ class HandoffMixin:
                     )
                 return self._handoff_visible(self._handoff_row(con, call_id))
 
-    def decide_handoff(self, claims, call_id, action):
+    def decide_handoff(self, claims, call_id, action, *, lease=None):
         from .ip_calls import CallError
         if action not in ("accept", "decline", "cancel", "complete"):
             raise CallError("invalid_handoff_action")
@@ -208,8 +230,10 @@ class HandoffMixin:
                         raise CallError("only_staff_can_decide_handoff", 403)
                     expected = ("OFFERED",)
                 else:
-                    if actor != call["caller"] or claims["role"] != "agent":
+                    owner = call["caller"] if call["agent"] else call["callee"]
+                    if actor != owner or claims["role"] != "agent":
                         raise CallError("only_originating_agent_can_transfer", 403)
+                    self._verify_inbound_agent_lease(con, call, claims, lease, now)
                     expected = ("OFFERED", "ACCEPTED") if action == "cancel" else ("ACCEPTED",)
                 target = {
                     "accept": "ACCEPTED", "decline": "DECLINED",
