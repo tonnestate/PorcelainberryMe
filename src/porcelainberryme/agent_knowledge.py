@@ -264,7 +264,8 @@ class KnowledgeStore:
                 ).fetchall()
             return [dict(x) for x in rows]
 
-    def answer(self, tenant: str, assistant: str, question: str) -> KnowledgeAnswer:
+    def answer(self, tenant: str, assistant: str, question: str, *,
+               record_unknown: bool = True) -> KnowledgeAnswer:
         _id(tenant)
         _id(assistant)
         normalized = normalize_question(question)
@@ -278,7 +279,7 @@ class KnowledgeStore:
                 ).fetchone()
                 if entry:
                     return KnowledgeAnswer(entry["answer"], True, entry["id"])
-                if p["retain_unknown"]:
+                if p["retain_unknown"] and record_unknown:
                     now = int(self.clock())
                     con.execute(
                         "DELETE FROM pb_kb_unknown WHERE tenant=? AND assistant=? "
@@ -349,15 +350,30 @@ class ApprovedKnowledgeResponder:
         if not isinstance(path, str) or not Path(path).is_file():
             raise KnowledgeError("approved_knowledge_database_missing")
         self.store = KnowledgeStore(path)
+        # Reviewed FAQ and documents share the same local SQLite identity,
+        # tenant profile and approval boundary. No separate SaaS service.
+        from .document_knowledge import DocumentKnowledgeStore
+        self.documents = DocumentKnowledgeStore(path)
         self.tenant, self.assistant = _id(tenant), _id(assistant)
         self.greeting = self.store.profile(tenant, assistant).greeting
         # Missing profiles fail before an outbound call is even initiated.
 
-    async def respond(self, text: str, history: list[dict]) -> str:
-        result = await asyncio.to_thread(
-            self.store.answer, self.tenant, self.assistant, text,
+    def _resolve(self, text: str) -> str:
+        # A document match must not first be recorded as an unanswered FAQ.
+        exact = self.store.answer(
+            self.tenant, self.assistant, text, record_unknown=False,
         )
-        return result.response
+        if exact.approved:
+            return exact.response
+        hit = self.documents.find_document(self.tenant, self.assistant, text)
+        if hit is not None:
+            # Speak only verbatim human-approved text with named provenance.
+            # No free-form LLM interpretation or factual extrapolation.
+            return f"Laut Dokument {hit.title}: {hit.text}"
+        return self.store.answer(self.tenant, self.assistant, text).response
+
+    async def respond(self, text: str, history: list[dict]) -> str:
+        return await asyncio.to_thread(self._resolve, text)
 
 
 def main():
