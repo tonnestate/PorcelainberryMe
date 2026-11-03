@@ -7,7 +7,7 @@ The software owns its communication interfaces and AI-call orchestration;
 it does not automatically provide an E.164 telephone carrier or a deployed
 speech/media infrastructure.
 
-**Status:** source prototype on main after merge; offline tests only, not deployed on the VPS. No live media or real AI call verified.
+**Status:** source implementation. Automated CI has now verified real synthetic WebRTC audio and the real agent/VoiceTurnEngine pipeline against a self-hosted LiveKit server using fake local STT/LLM/TTS. No user-VPS deployment, actual German model conversation, iPhone background ringing or PSTN interconnection is verified. See [real media CI evidence](docs/REAL_MEDIA_EVIDENCE.md).
 
 ### Implemented
 
@@ -93,14 +93,14 @@ Technical details: [operator handoff](docs/OPERATIONS.md),
 [donor audit](docs/DONOR_AUDIT.md).
 
 
-### Headless Internet Call Control — new feature branch slice
+### Headless Internet Call Control
 
 The scope is now an **independently usable headless IP communications platform**, including **agent-initiated calls to registered Internet identities**, not merely a SIP/WhatsApp relay for FruitStack. The initial call-control implementation handles a verified agent's outbound call invitation, recipient-specific ring notifications, explicit answer/decline/hangup, tenant and identity isolation, stable idempotency, timeouts, and issuance of short-lived **self-hosted LiveKit** microphone-only room credentials after acceptance. It uses the standard library and existing SQLite; no paid API is required to run the control plane.
 
-**Not yet a working voice phone or commercial SaaS:** LiveKit media has not been deployed, no independent user app or local AI speech agent is running, and no real WebRTC audio call has passed. Native phone numbers and ordinary cellular calls require a separate PSTN interconnect and cannot be reached over Internet alone at zero provider cost. See [HEADLESS_IP_CALLS.md](docs/HEADLESS_IP_CALLS.md) for the source-only invocation, architecture and remaining hard release gates. The earlier experimental baresip SIP module is not the default media path.
+**Not yet a production phone service or commercial SaaS:** LiveKit media now passes real synthetic PCM transport tests and an end-to-end agent-pipeline test on an isolated CI server, but no full German local-model call, installed customer app or user-VPS deployment is established. Ordinary mobile/fixed-line numbers still require a PSTN interconnect. See [HEADLESS_IP_CALLS.md](docs/HEADLESS_IP_CALLS.md) and [real-media evidence](docs/REAL_MEDIA_EVIDENCE.md).
 
 
-### Free local AI voice worker (source implementation; live media pending)
+### Free local AI voice worker (real CI transport proven; local speech quality pending)
 
 This feature branch now includes a concrete autonomous **Internet** voice-agent code path:
 authenticated agent role -> originate a consented IP call -> wait for acceptance
@@ -111,14 +111,13 @@ faster-whisper model -> respond using **local Ollama** -> synthesize via an
 Incoming speech interrupts the outgoing audio queue. No paid APIs, carrier
 plans or new cloud subscriptions are dependencies.
 
-**Status:** all tests so far are offline/mocked; no real deployment, installed
-models, LiveKit audio acceptance, iPhone background ringing or acceptable
-natural speech latency are established. The first energy-based detector and
-whole-utterance STT/TTS are not production-ready conversational turn-taking.
-The free Python optional extras are deliberately not installed by default.
-A real self-hosted LiveKit two-peer PCM smoke test is available as source in
-scripts/livekit_audio_smoke.py, but it has not run on the actual VPS or
-validated German speech. See [local agent execution and acceptance](docs/LOCAL_VOICE_AGENT.md) and
+**Status:** a new PR-only CI test has passed real WebRTC PCM transport and
+real autonomous agent audio with local **fake** STT/LLM/TTS against a fresh
+self-hosted LiveKit instance. No actual speech models, iPhone ringing, VPS
+capacity or acceptable natural-language latency have been validated.
+The energy detector and whole-turn STT/TTS need production improvements;
+no models are installed by default. Synthetic evidence and boundaries:
+[real media CI](docs/REAL_MEDIA_EVIDENCE.md). See [local agent execution and acceptance](docs/LOCAL_VOICE_AGENT.md) and
 [headless call architecture](docs/HEADLESS_IP_CALLS.md). Public mobile/landline
 numbers remain impossible without a separately funded PSTN interconnect.
 
@@ -165,8 +164,10 @@ Technical configuration, booking CLI and honest remaining limitations:
 [Fonio feature-parity gaps](docs/FONIO_PARITY.md), and
 [local WebRTC voice worker](docs/LOCAL_VOICE_AGENT.md).
 
-**Offline CI still does not prove a real live call, commercial-grade voice
-latency, iPhone push delivery or public telephone-network connectivity.**
+**Real CI now verifies synthetic, self-hosted WebRTC transport and an actual
+agent media session with fake speech adapters.** It does not prove natural
+German conversation, iPhone push delivery, production VPS capacity,
+commercial voice latency or public telephone-network connectivity.
 
 
 ### Approved business documents (source-level implementation)
