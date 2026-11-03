@@ -123,3 +123,26 @@ The default LiveKit --dev secret is too short for our required media signing
 secret, so the operator must configure strong private self-hosted credentials.
 References: https://docs.livekit.io/transport/self-hosting/local/
 and https://docs.livekit.io/transport/self-hosting/deployment/.
+
+### Creating an isolated free LiveKit test configuration
+
+Generate a strong local API key, media secret, identity token key and
+a private LiveKit YAML configuration using the Python standard library:
+
+    python scripts/generate_local_livekit_config.py --output ./local-private
+
+The command refuses to overwrite existing secrets and writes private files.
+Do not commit local-private/ to Git. On a host where the open-source
+livekit-server binary is ALREADY installed, point it to the generated YAML
+with a loopback-only bind and keep that local server process running:
+
+    livekit-server --config ./local-private/livekit-local.yaml --bind 127.0.0.1
+
+Load the generated local-media.env into the trusted shell (never in
+a browser), then run the previously documented livekit_audio_smoke.py.
+Do not expose this local-only test instance to the public Internet.
+
+The generator does not install software, buy a telephone number,
+download a model, start LiveKit, or use a cloud account. A fully external
+WebRTC deployment requires separate firewall/TURN/TLS configuration
+and on-host resource verification.
