@@ -46,6 +46,18 @@ class InternetCallsTest(unittest.TestCase):
         return json.loads(base64.urlsafe_b64decode(
             jwt.split(".")[1] + "=" * (-len(jwt.split(".")[1]) % 4)))
 
+    def test_call_control_without_livekit_configuration(self):
+        separate = CallRegistry(
+            str(Path(self.tmp.name) / "unconfigured.sqlite"),
+            identity_secret=self.secret, clock=lambda: self.tick[0],
+        )
+        separate.provision("tenant_a", "assistant")
+        separate.provision("tenant_a", "bob", allow_agent_calls=True)
+        ringing = separate.originate(self.agent, "bob", "not-yet-media-01")
+        separate.decide(self.bob, ringing["id"], "accept")
+        with self.assertRaisesRegex(CallError, "media_backend_not_configured"):
+            separate.media_credentials(self.bob, ringing["id"])
+
     def test_agent_can_initiate_unpaid_ip_call_not_pstn(self):
         ringing = self._ring(self.agent)
         self.assertTrue(ringing["agent_initiated"])
