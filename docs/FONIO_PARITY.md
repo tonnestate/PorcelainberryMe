@@ -16,7 +16,7 @@ Sources:
 | Function | Fonio public claim | PorcelainberryMe as of this change | Release gate |
 | --- | --- | --- | --- |
 | Ordinary PSTN numbers (inbound/outbound) | Yes, number/SIP/carrier plans | NO PSTN access; only Internet identities | Carrier interconnect required; impossible to claim free PSTN from Internet alone |
-| Real incoming calls | Yes | IP invitation and browser polling only, no sleeping handset notification | End-to-end iPhone/mobile and remote network tests |
+| Real incoming calls | Yes | NEW: encrypted, opt-in first-party PWA Web Push ringing and staff alerts with durable event outbox, authenticated multi-device subscriptions and click-to-resume; no native CallKit or measured iPhone delivery | Live installed iPhone acceptance, app UI, remote TURN/TLS, native UX if required |
 | Outbound AI calls | Yes on supported plans | Real media CI verifies IP origination, acceptance and actual LiveKit voice-agent PCM with local fake speech providers; no PSTN numbers | Installed real models, human call quality, outbound consent UX, caller abuse testing |
 | Low-latency natural conversation | Yes | Real self-hosted PCM transport and full agent pipeline proven with synthetic audio; natural model latency and turn quality remain unverified | German Whisper/Ollama/Piper audio and interruption measurements |
 | Many voices/languages | 120+ voices, 60+ languages listed | One explicitly installed local Piper voice; German local STT setting | Model inventory, licenses, pronunciation, tests |
@@ -101,3 +101,8 @@ On 2026-11-03, isolated GitHub PR CI passed both two-peer real WebRTC PCM transp
 ## Real employee warm handoff milestone
 
 The existing autonomous Internet agent now supports an explicit customer request for a configured, enrolled human operator. The employee accepts/declines via the browser IPCallClient, joins the same LiveKit room and the agent leaves only after the employee's actual published microphone identity is observed. A real three-participant LiveKit PR test delivered nonzero employee-to-customer audio after the AI left, while the original call remained ACTIVE. Cancellation/expiry causes durable room-scoped staff removal attempts until the last self-hosted JWT expires. See docs/STAFF_HANDOFF.md. This does NOT support traditional PSTN transfers, emergency calling or suspended-phone push notifications.
+
+
+## Browser push notifications milestone
+
+PorcelainberryMe now has an optional self-hosted VAPID Web Push sender, durable pending-call notifications, tenant/device-scoped subscription API, and first-party PWA service worker. Apple supports Web Push for Home Screen apps on iOS 16.4+ with a direct user permission gesture, but a submitted push request is **not evidence of ringing or a delivered phone call**. The service is not a native CallKit/PSTN phone provider. See docs/WEB_PUSH_CALLS.md.

@@ -4,6 +4,33 @@
  * A real media connection requires the open-source livekit-client package and
  * an independent self-hosted LiveKit server.
  */
+/**
+ * Stable opaque browser-device key derived from this push endpoint, not
+ * stored in tracking cookies. Requires a secure context/WebCrypto.
+ */
+export async function pushDeviceId(endpoint) {
+  if (typeof endpoint !== 'string' || !endpoint.startsWith('https://')) {
+    throw new Error('invalid_push_endpoint');
+  }
+  if (!globalThis.crypto?.subtle) throw new Error('secure_webcrypto_required');
+  const hash = new Uint8Array(await globalThis.crypto.subtle.digest(
+    'SHA-256', new TextEncoder().encode(endpoint)
+  ));
+  return Array.from(hash.slice(0, 16), v => v.toString(16).padStart(2, '0')).join('');
+}
+
+export function decodeVapidKey(publicKey) {
+  if (typeof publicKey !== 'string' || !/^[A-Za-z0-9_-]{86,90}$/.test(publicKey)) {
+    throw new Error('invalid_vapid_public_key');
+  }
+  const binary = atob(publicKey.replace(/-/g, '+').replace(/_/g, '/'));
+  const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+  if (bytes.length !== 65 || bytes[0] !== 4) {
+    throw new Error('invalid_vapid_public_key');
+  }
+  return bytes;
+}
+
 export class IPCallClient {
   constructor({
     apiBase,
@@ -48,6 +75,62 @@ export class IPCallClient {
       throw error;
     }
     return payload;
+  }
+
+  /**
+   * Retrieve the PUBLIC VAPID key ahead of a user click. HTTPS/PWA
+   * installation and explicit notification consent remain mandatory.
+   */
+  async pushConfig() {
+    return this.request('GET', '/v1/ip-calls/push/config');
+  }
+
+  /**
+   * IMPORTANT: Call this directly from a user click/tap handler after
+   * a service worker has already been registered. Never request push
+   * permission automatically during app startup.
+   */
+  async enableCallPush({ registration, vapidPublicKey }) {
+    if (!registration?.pushManager
+        || typeof registration.pushManager.subscribe !== 'function') {
+      throw new Error('push_service_worker_required');
+    }
+    // Avoid an await/network request before prompting; user activation can
+    // be lost if a client fetches configuration inside this callback.
+    const subscription = await registration.pushManager.getSubscription()
+      || await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: decodeVapidKey(vapidPublicKey),
+      });
+    const wire = subscription.toJSON();
+    if (!wire?.endpoint || !wire.keys?.p256dh || !wire.keys?.auth) {
+      throw new Error('invalid_browser_push_subscription');
+    }
+    const deviceId = await pushDeviceId(wire.endpoint);
+    const stored = await this.request('POST',
+      '/v1/ip-calls/push/subscriptions', {
+        device_id: deviceId,
+        endpoint: wire.endpoint,
+        keys: wire.keys,
+      });
+    return { device_id: deviceId, enabled: stored.enabled };
+  }
+
+  async disableCallPush({ registration }) {
+    if (!registration?.pushManager) {
+      throw new Error('push_service_worker_required');
+    }
+    const subscription = await registration.pushManager.getSubscription();
+    if (!subscription) return { enabled: false, removed: false };
+    const deviceId = await pushDeviceId(subscription.endpoint);
+    // Revoke on the authenticated server FIRST. If it is unavailable,
+    // do not falsely claim delivery has been disabled there.
+    const result = await this.request(
+      'DELETE', '/v1/ip-calls/push/subscriptions',
+      { device_id: deviceId }
+    );
+    await subscription.unsubscribe();
+    return result;
   }
 
   async dial(to, idempotencyKey) {

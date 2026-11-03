@@ -1,0 +1,10 @@
+{
+  "id": "/",
+  "name": "PorcelainberryMe",
+  "short_name": "PorcelainberryMe",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "description": "Internet calls and AI reception on your device",
+  "lang": "de"
+}
