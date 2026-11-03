@@ -120,14 +120,6 @@ class CallNotesStore:
             db.execute("BEGIN IMMEDIATE")
             with db:
                 self._prune(db)
-                count = db.execute(
-                    "SELECT COUNT(*) FROM pb_call_notes WHERE tenant=? AND assistant=?",
-                    (tenant, assistant),
-                ).fetchone()[0]
-                if count >= MAX_NOTES:
-                    # Fail closed if retention/volume cap is reached; do not
-                    # evict another caller's notes without an admin policy.
-                    raise NoteError("tenant_call_note_limit_reached")
                 existing = db.execute(
                     "SELECT tenant,assistant,caller FROM pb_call_notes WHERE call_id=?",
                     (call_id,),
@@ -138,6 +130,14 @@ class CallNotesStore:
                     ):
                         raise NoteError("note_identity_conflict")
                     return False
+                count = db.execute(
+                    "SELECT COUNT(*) FROM pb_call_notes WHERE tenant=? AND assistant=?",
+                    (tenant, assistant),
+                ).fetchone()[0]
+                if count >= MAX_NOTES:
+                    # Idempotent replay was already handled above. Never
+                    # evict another caller's data without an admin policy.
+                    raise NoteError("tenant_call_note_limit_reached")
                 db.execute(
                     "INSERT INTO pb_call_notes VALUES(?,?,?,?,?,?,?)",
                     (call_id, tenant, assistant, caller, note, excerpts,
