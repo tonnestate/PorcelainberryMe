@@ -16,6 +16,7 @@ import sys
 import time
 from uuid import uuid4
 
+from .agent_knowledge import DEFAULT_GREETING
 from .local_voice import (
     AudioPacket, LocalFasterWhisper, LocalOllamaResponder,
     LocalPiperVoice, LocalVoiceUnavailable, VoiceTurnEngine,
@@ -110,7 +111,11 @@ class LiveKitAgentCall:
     """One-to-one voice assistant for an already accepted Internet call."""
 
     def __init__(self, *, client: CallControlClient, tenant: str,
-                 callee: str, tts, stt, llm, rtc):
+                 callee: str, tts, stt, llm, rtc,
+                 greeting: str = DEFAULT_GREETING):
+        if not isinstance(greeting, str) or not 1 <= len(greeting.strip()) <= 500:
+            raise ValueError("invalid_agent_greeting")
+        self.greeting = greeting.strip()
         self.client = client
         self.tenant = tenant
         self.callee = callee
@@ -201,6 +206,13 @@ class LiveKitAgentCall:
             options = self.rtc.TrackPublishOptions()
             options.source = self.rtc.TrackSource.SOURCE_MICROPHONE
             await room.local_participant.publish_track(track, options)
+            # This is an actual audio greeting, not just a profile field.
+            # Remote audio is already subscribed, so human barge-in can
+            # cancel queued greeting playback through VoiceTurnEngine.
+            if not self._closed.is_set():
+                welcome_pcm = await self.tts.synthesize(self.greeting)
+                if not self._closed.is_set():
+                    await speaker.play(welcome_pcm)
             watcher = asyncio.create_task(self._watch_call(call_id))
             waiter = asyncio.create_task(self._closed.wait())
             try:
@@ -265,6 +277,7 @@ async def call_human(*, target: str, tenant: str, control_token: str,
                 await LiveKitAgentCall(
                     client=client, tenant=tenant, callee=target,
                     tts=tts, stt=stt, llm=llm, rtc=rtc,
+                    greeting=getattr(llm, "greeting", DEFAULT_GREETING),
                 ).speak(call_id)
                 return
             if status["state"] != "RINGING":
