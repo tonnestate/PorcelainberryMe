@@ -38,6 +38,7 @@ AGENT_COOLDOWN_SECONDS = 120
 MAX_TENANT_ACTIVE_CALLS = 40
 EVENT_RETENTION_SECONDS = 30 * 86400
 MAX_EVENTS_PER_RECIPIENT = 1000
+CALL_HISTORY_RETENTION_SECONDS = 30 * 86400
 
 
 class CallError(Exception):
@@ -152,6 +153,7 @@ class CallRegistry:
                   caller TEXT NOT NULL, callee TEXT NOT NULL,
                   agent INTEGER NOT NULL, state TEXT NOT NULL,
                   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+                  closed_at INTEGER,
                   idem TEXT NOT NULL,
                   UNIQUE(tenant, caller, idem)
                 );
@@ -189,6 +191,16 @@ class CallRegistry:
                     "ALTER TABLE ip_call_users ADD COLUMN do_not_disturb "
                     "INTEGER NOT NULL DEFAULT 0"
                 )
+            columns = {
+                row["name"] for row in con.execute("PRAGMA table_info(ip_calls)")
+            }
+            if "closed_at" not in columns:
+                con.execute("ALTER TABLE ip_calls ADD COLUMN closed_at INTEGER")
+                con.execute(
+                    "UPDATE ip_calls SET closed_at=expires_at "
+                    "WHERE state IN ('ENDED','DECLINED','TIMED_OUT')"
+                )
+            con.commit()
 
     def _conn(self):
         con = sqlite3.connect(self.path, timeout=20)
@@ -263,18 +275,44 @@ class CallRegistry:
         ).fetchall()
         for call in rows:
             self._queue_media_teardown(con, call, now)
-            con.execute("UPDATE ip_calls SET state='TIMED_OUT' WHERE id=?", (call["id"],))
+            con.execute(
+                "UPDATE ip_calls SET state='TIMED_OUT',closed_at=? WHERE id=?",
+                (now, call["id"]),
+            )
             self._event(con, call, call["caller"], "TIMED_OUT", now)
             self._event(con, call, call["callee"], "TIMED_OUT", now)
 
+    def _prune_closed_calls(self, con, now):
+        # Keep history while media revocation is outstanding. Never delete a
+        # call whose LiveKit teardown has not been durably confirmed.
+        eligible = con.execute(
+            "SELECT c.id FROM ip_calls AS c WHERE c.closed_at<? "
+            "AND c.state IN ('ENDED','DECLINED','TIMED_OUT') "
+            "AND NOT EXISTS(SELECT 1 FROM ip_media_teardown AS m "
+            "WHERE m.call_id=c.id AND m.completed=0) "
+            "LIMIT 200",
+            (now - CALL_HISTORY_RETENTION_SECONDS,),
+        ).fetchall()
+        for row in eligible:
+            call_id = row["id"]
+            con.execute("DELETE FROM ip_call_events WHERE call_id=?", (call_id,))
+            con.execute("DELETE FROM ip_media_teardown WHERE call_id=?", (call_id,))
+            con.execute("DELETE FROM ip_calls WHERE id=?", (call_id,))
+
     def _open(self):
         con = self._conn()
-        con.execute("BEGIN IMMEDIATE")
-        now = self._now()
-        self._transition_expired(con, now)
-        con.execute("DELETE FROM ip_call_events WHERE created_at<?",
-                    (now - EVENT_RETENTION_SECONDS,))
-        return con
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            now = self._now()
+            self._transition_expired(con, now)
+            con.execute("DELETE FROM ip_call_events WHERE created_at<?",
+                        (now - EVENT_RETENTION_SECONDS,))
+            self._prune_closed_calls(con, now)
+            return con
+        except BaseException:
+            con.rollback()
+            con.close()
+            raise
 
     @staticmethod
     def _visible(call, viewer: str):
@@ -356,7 +394,9 @@ class CallRegistry:
                     raise CallError("endpoint_busy", 409)
                 call_id = uuid4().hex
                 con.execute(
-                    "INSERT INTO ip_calls VALUES(?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO ip_calls("
+                    "id,tenant,caller,callee,agent,state,created_at,expires_at,closed_at,idem"
+                    ") VALUES(?,?,?,?,?,?,?,?,NULL,?)",
                     (call_id, tenant, caller, callee, int(claims["role"] == "agent"),
                      "RINGING", now, now + RING_SECONDS, idem),
                 )
@@ -407,8 +447,10 @@ class CallRegistry:
                 expires_at = now + MAX_CALL_SECONDS if decision == "accept" else now
                 if decision == "hangup":
                     self._queue_media_teardown(con, call, now)
-                con.execute("UPDATE ip_calls SET state=?, expires_at=? WHERE id=?",
-                            (target, expires_at, call_id))
+                con.execute(
+                    "UPDATE ip_calls SET state=?, expires_at=?, closed_at=? WHERE id=?",
+                    (target, expires_at, now if target != "ACTIVE" else None, call_id),
+                )
                 for user in (call["caller"], call["callee"]):
                     self._event(con, call, user, target, now)
                 changed = con.execute("SELECT * FROM ip_calls WHERE id=?", (call_id,)).fetchone()
