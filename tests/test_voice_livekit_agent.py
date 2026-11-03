@@ -4,10 +4,13 @@ The transport is exercised with a simulated WebRTC SDK; these tests do NOT
 demonstrate latency or media connectivity on the actual VPS.
 """
 import asyncio
+from pathlib import Path
 import struct
+import tempfile
 from types import SimpleNamespace
 import unittest
 
+from porcelainberryme.call_notes import CallNotesStore, ConsentedNotesResponder
 from porcelainberryme.local_voice import AudioPacket
 from porcelainberryme.voice_livekit_agent import (
     LiveKitAgentCall, LiveKitPcmSpeaker,
@@ -215,6 +218,83 @@ class VoiceLiveKitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rooms[0].disconnect_count, 1)
         self.assertTrue(worker._source.closed)
         self.assertEqual(worker._source.frames, [])
+
+    async def test_real_voice_engine_persists_notes_only_after_spoken_opt_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = CallNotesStore(str(Path(tmp) / "call-notes.sqlite"))
+            rtc = SimpleNamespace(**{k: getattr(FakeRTC, k) for k in (
+                "TrackKind", "TrackSource", "AudioFrame", "AudioSource",
+                "LocalAudioTrack", "TrackPublishOptions", "RoomOptions",
+            )})
+
+            class TwoTurnAudioStream:
+                @staticmethod
+                def from_track(track, sample_rate, num_channels,
+                               frame_size_ms, capacity):
+                    class Stream:
+                        async def aclose(self):
+                            pass
+                        async def _gen(self):
+                            for _turn in range(2):
+                                for _ in range(12):
+                                    yield SimpleNamespace(frame=SimpleNamespace(
+                                        data=memoryview(pcm()), sample_rate=16000,
+                                        num_channels=1,
+                                    ))
+                                for _ in range(35):
+                                    yield SimpleNamespace(frame=SimpleNamespace(
+                                        data=memoryview(pcm(0)), sample_rate=16000,
+                                        num_channels=1,
+                                    ))
+                                await asyncio.sleep(0.07)
+                            await asyncio.Event().wait()
+                        def __aiter__(self):
+                            return self._gen()
+                    return Stream()
+
+            rtc.AudioStream = TwoTurnAudioStream
+            class Room(FakeRTC.Room):
+                async def connect(self, url, token, options):
+                    self.remote_identity = LiveKitAgentCall.participant_identity(
+                        "e" * 32, "tenantA", "human1",
+                    )
+                    await super().connect(url, token, options)
+            rtc.Room = Room
+
+            class STT:
+                count = 0
+                async def transcribe(self, data):
+                    self.count += 1
+                    return (
+                        "Ich stimme der Speicherung einer Gesprächsnotiz zu."
+                        if self.count == 1 else
+                        "Bitte kontaktieren Sie mich wegen des Liefertermins."
+                    )
+
+            class BaseResponder:
+                async def respond(self, text, history):
+                    return "Ich habe Ihre Frage gehört."
+
+            class Control(FakeControl):
+                async def status(self, call_id):
+                    self.checks += 1
+                    return {"state": "ACTIVE" if self.checks <= 2 else "ENDED"}
+
+            llm = ConsentedNotesResponder(
+                BaseResponder(), db,
+                tenant="tenantA", assistant="assistant", caller="human1",
+            )
+            worker = LiveKitAgentCall(
+                client=Control(), tenant="tenantA", callee="human1",
+                tts=FakeTTS(), stt=STT(), llm=llm, rtc=rtc,
+                greeting="Willkommen beim digitalen Empfang.",
+            )
+            await asyncio.wait_for(worker.speak("e" * 32), timeout=4.5)
+            notes = db.list_notes("tenantA", "assistant")
+            self.assertEqual(len(notes), 1)
+            self.assertIn("Liefertermins", notes[0].text)
+            self.assertNotIn("Ich stimme", notes[0].text)
+            self.assertEqual(notes[0].excerpts, 1)
 
     async def test_only_expected_remote_identity_is_subscribed(self):
         rtc = SimpleNamespace(**{k: getattr(FakeRTC, k) for k in (

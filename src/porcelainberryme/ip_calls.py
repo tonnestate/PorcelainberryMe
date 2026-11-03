@@ -685,28 +685,45 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(registry))
     stop = threading.Event()
     worker = None
+    terminator = None
+    notes = None
     if registry.media_url:
         # Only the configured self-hosted LiveKit is contacted. The worker
         # reclaims rooms on hangup, timeout and restart, without paid APIs.
         from .media_cleanup import LiveKitRoomTerminator
-
         terminator = LiveKitRoomTerminator(
             registry.media_url, registry.media_key, registry.media_secret,
         )
+    notes_path = os.environ.get("PB_CALL_NOTES_DB", "").strip()
+    if notes_path:
+        from .call_notes import CallNotesStore
+        notes = CallNotesStore(notes_path)
 
+    if terminator is not None or notes is not None:
         def reconcile_loop():
             import sys
+            last_notes_sweep = 0.0
             while not stop.is_set():
-                try:
-                    registry.reconcile_media(terminator.delete_room)
-                except (sqlite3.Error, OSError) as exc:
-                    # Never emit call identities or secrets into the log.
-                    print("ip_media_reconcile_error:" + type(exc).__name__,
-                          file=sys.stderr)
-                stop.wait(MEDIA_CLEANUP_INTERVAL_SECONDS)
+                if terminator is not None:
+                    try:
+                        registry.reconcile_media(terminator.delete_room)
+                    except (sqlite3.Error, OSError) as exc:
+                        # Never emit call identities, notes or secrets.
+                        print("ip_media_reconcile_error:" + type(exc).__name__,
+                              file=sys.stderr)
+                current = time.monotonic()
+                if notes is not None and current - last_notes_sweep >= 3600:
+                    try:
+                        notes.prune_expired()
+                        last_notes_sweep = current
+                    except (sqlite3.Error, OSError) as exc:
+                        print("ip_note_retention_error:" + type(exc).__name__,
+                              file=sys.stderr)
+                stop.wait(MEDIA_CLEANUP_INTERVAL_SECONDS if
+                          terminator is not None else 3600)
 
         worker = threading.Thread(target=reconcile_loop, daemon=True,
-                                  name="ip-media-reconcile")
+                                  name="ip-control-maintenance")
         worker.start()
     try:
         server.serve_forever()
