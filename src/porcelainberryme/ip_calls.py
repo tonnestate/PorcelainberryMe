@@ -510,6 +510,13 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
         with closing(self._open()) as con:
             with con:
                 call = self._get(con, claims["tenant"], claims["sub"], call_id)
+                if claims["sub"] not in (call["caller"], call["callee"]):
+                    # A cancelled/declined/expired offer does not confer
+                    # ongoing surveillance of the customer's active call.
+                    offer = self._handoff_row(con, call_id)
+                    if (offer is None or offer["target"] != claims["sub"]
+                            or offer["state"] not in ("OFFERED", "ACCEPTED", "CONNECTED")):
+                        raise CallError("call_not_found", 404)
                 return self._handoff_with_call(con, call, claims["sub"])
 
     def inbox(self, claims: dict, after: int = 0) -> dict:
@@ -525,8 +532,24 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                 events = []
                 for row in rows:
                     call = self._get(con, claims["tenant"], claims["sub"], row["call_id"])
+                    if claims["sub"] not in (call["caller"], call["callee"]):
+                        offer = self._handoff_row(con, call["id"])
+                        if (offer is None or offer["target"] != claims["sub"]
+                                or offer["state"] not in ("OFFERED", "ACCEPTED", "CONNECTED")):
+                            # Historical staff notification is still acknowledged
+                            # so polling can advance. Do not disclose the live
+                            # customer's peer/current state after revocation.
+                            visible = {"id": call["id"], "state": "HANDOFF_REVOKED"}
+                        else:
+                            visible = self._handoff_with_call(
+                                con, call, claims["sub"],
+                            )
+                    else:
+                        visible = self._handoff_with_call(
+                            con, call, claims["sub"],
+                        )
                     events.append({"cursor": row["seq"], "kind": row["kind"],
-                                   "call": self._visible(call, claims["sub"])})
+                                   "call": visible})
                 return {"events": events, "next_cursor": rows[-1]["seq"] if rows else after}
 
     def decide(self, claims: dict, call_id: str, decision: str) -> dict:
