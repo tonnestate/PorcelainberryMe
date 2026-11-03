@@ -95,7 +95,7 @@ class HandoffStateTests(unittest.TestCase):
         call = self.active()
         offered = self.offer(call["id"])
         self.assertEqual(self.offer(call["id"]), offered)  # idempotent
-        with self.assertRaisesRegex(CallError, "handoff_already_pending"):
+        with self.assertRaisesRegex(CallError, "handoff_already_attempted"):
             self.offer(call["id"], "different-handoff-01")
         self.assertEqual(
             self.db.decide_handoff(self.staff, call["id"], "accept")["state"],
