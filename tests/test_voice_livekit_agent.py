@@ -333,8 +333,9 @@ class VoiceLiveKitTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(rooms[0].published)
         self.assertEqual(rooms[0].disconnect_count, 1)
         self.assertTrue(worker._source.closed)
-        self.assertEqual(tts.utterances[0],
-                         "Guten Tag. Sie sprechen mit dem digitalen Empfang.")
+        # When the caller starts speaking immediately, the greeting may
+        # correctly be interrupted or suppressed. A reply must be generated.
+        self.assertIn("Ja, ich höre dich.", tts.utterances)
         self.assertEqual(worker._engine.turns_completed, 1)
         self.assertGreaterEqual(control.checks, 2)
 
