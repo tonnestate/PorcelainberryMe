@@ -167,3 +167,8 @@ Technical configuration, booking CLI and honest remaining limitations:
 
 **Offline CI still does not prove a real live call, commercial-grade voice
 latency, iPhone push delivery or public telephone-network connectivity.**
+
+
+### Approved business documents (source-level implementation)
+
+The existing approved agent knowledge database also supports trusted local Markdown/plain-text imports with document-revision approval, bounded paragraph extraction, conservative lexical retrieval, source attribution and a safe no-match fallback. Only reviewed text belonging to the current tenant/assistant can be spoken. This is **not** semantic search or automatic website ingestion. See [document knowledge](docs/DOCUMENT_KNOWLEDGE.md) and [Fonio capability gaps](docs/FONIO_PARITY.md). No paid API or new service is required.
