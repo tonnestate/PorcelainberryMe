@@ -72,7 +72,9 @@ class Session:
         Session.logs.append(("responder", type(self.data["llm"]).__name__))
         Session.logs.append(("greeting", self.data["greeting"]))
         Session.logs.append(("lease", self.data["client"].inbound_lease))
-        await heartbeat()
+        # Give the independent lease keeper its own event-loop turn,
+        # even when this synthetic media session finishes very quickly.
+        await asyncio.sleep(0.05)
         if Session.fails:
             raise OSError("mock_media_disconnected")
 
@@ -123,6 +125,30 @@ class InboundWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(count, 1)
         self.assertGreaterEqual(client.cursor_history.count(0), 3)
         self.assertEqual(client.claims, [CALL1])
+
+    async def test_lease_loss_cancels_media_before_a_second_worker_reclaims(self):
+        from porcelainberryme.voice_inbound_agent import run_fenced_voice_session
+        class FailedLease:
+            async def heartbeat_inbound(self, call_id, lease):
+                raise RuntimeError("call_control_inbound_lease_lost")
+        class HangingSession:
+            def __init__(self):
+                self.started = asyncio.Event()
+                self.cancelled = False
+            async def speak(self, call_id):
+                self.started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+        session = HangingSession()
+        with self.assertRaisesRegex(RuntimeError, "inbound_lease_lost"):
+            await asyncio.wait_for(run_fenced_voice_session(
+                session, FailedLease(), CALL1, "f" * 32,
+            ), timeout=1)
+        self.assertTrue(session.started.is_set())
+        self.assertTrue(session.cancelled)
 
     async def test_bad_identity_never_claims_or_loads_model(self):
         client = Control()
