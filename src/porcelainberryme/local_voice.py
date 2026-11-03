@@ -179,6 +179,43 @@ class LocalOllamaResponder:
         self.system = system
         self.timeout = timeout
 
+    async def preflight(self) -> None:
+        """Reject missing local models before dialing any recipient.
+
+        Ollama's local model listing is checked without pulling a model.
+        The endpoint is fixed to loopback, never a paid/cloud API.
+        """
+        def probe():
+            conn = http.client.HTTPConnection(
+                "127.0.0.1", 11434, timeout=min(self.timeout, 5),
+            )
+            try:
+                conn.request("GET", "/api/tags")
+                response = conn.getresponse()
+                data = response.read(65537)
+                if response.status != 200 or len(data) > 65536:
+                    raise LocalVoiceUnavailable("local_ollama_registry_unavailable")
+                try:
+                    registry = json.loads(data)
+                    models = registry["models"]
+                    if not isinstance(models, list):
+                        raise ValueError("invalid_models_array")
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise LocalVoiceUnavailable("local_ollama_registry_invalid") from exc
+                installed = {
+                    identifier
+                    for item in models if isinstance(item, dict)
+                    for identifier in (item.get("name"), item.get("model"))
+                    if isinstance(identifier, str)
+                }
+                if self.model not in installed:
+                    raise LocalVoiceUnavailable("local_ollama_model_not_installed")
+            except (OSError, http.client.HTTPException) as exc:
+                raise LocalVoiceUnavailable("local_ollama_unreachable") from exc
+            finally:
+                conn.close()
+        await asyncio.to_thread(probe)
+
     async def respond(self, text: str, history: list[dict]) -> str:
         if not 1 <= len(text.strip()) <= 1200:
             raise ValueError("invalid_transcribed_text")
