@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import closing
 import json
+import math
 import os
 from pathlib import Path
 import struct
@@ -54,19 +55,27 @@ async def wait_for_pcm(rtc, track, received: asyncio.Future, sample_rate: int):
         await stream.aclose()
 
 
-async def publish_probe(rtc, room, *, rate: int = 16000):
+async def publish_probe(rtc, room, subscribed: asyncio.Future,
+                        *, rate: int = 16000):
     source = rtc.AudioSource(sample_rate=rate, num_channels=1, queue_size_ms=200)
     try:
         track = rtc.LocalAudioTrack.create_audio_track("probe", source)
         opts = rtc.TrackPublishOptions()
         opts.source = rtc.TrackSource.SOURCE_MICROPHONE
         await room.local_participant.publish_track(track, opts)
-        # 100 x 20 ms frames of non-zero PCM, no private microphone.
+        # Do not emit the probe until LiveKit reports that the other party
+        # actually subscribed to this exact remote audio publication.
+        await asyncio.wait_for(subscribed, timeout=6)
+        # 100 x 20 ms of audible 440 Hz PCM, well below Opus low-pass.
+        # The original alternating-sign Nyquist-frequency waveform could
+        # be suppressed by codec filtering despite a correct WebRTC link.
         samples = rate // 50
-        sine = struct.pack("<" + "h" * samples, *(
-            3000 if i % 2 else -3000 for i in range(samples)
-        ))
-        for _ in range(100):
+        for index in range(100):
+            sine = struct.pack("<" + "h" * samples, *(
+                int(6000 * math.sin(2 * math.pi * 440 *
+                                    (index * samples + i) / rate))
+                for i in range(samples)
+            ))
             frame = rtc.AudioFrame(
                 data=sine, sample_rate=rate,
                 num_channels=1, samples_per_channel=samples,
@@ -130,12 +139,15 @@ async def main():
         publisher, subscriber = rtc.Room(), rtc.Room()
         tasks = []
         received = asyncio.get_running_loop().create_future()
+        subscribed = asyncio.get_running_loop().create_future()
 
         @subscriber.on("track_subscribed")
         def on_track(track, publication, participant):
             if participant.identity == agent_media["participant"] and (
                 track.kind == rtc.TrackKind.KIND_AUDIO
             ):
+                if not subscribed.done():
+                    subscribed.set_result(True)
                 tasks.append(asyncio.create_task(wait_for_pcm(
                     rtc, track, received, sample_rate=16000,
                 )))
@@ -149,10 +161,12 @@ async def main():
                 publisher.connect(agent_media["url"], agent_media["token"]),
                 timeout=8,
             )
-            # Allow remote subscriber to bind before sending nonzero PCM.
-            await asyncio.sleep(0.25)
-            await asyncio.wait_for(publish_probe(rtc, publisher), timeout=12)
-            frames = await asyncio.wait_for(received, timeout=12)
+            # Explicit publication-subscription barrier; no race with the
+            # remote track handler and no false positive without actual PCM.
+            await asyncio.wait_for(
+                publish_probe(rtc, publisher, subscribed), timeout=15,
+            )
+            frames = await asyncio.wait_for(received, timeout=8)
             print(json.dumps({
                 "result": "REAL_WEBRTC_PCM_RECEIVED",
                 "received_nonzero_frames": frames,
