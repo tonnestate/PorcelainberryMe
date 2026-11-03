@@ -105,3 +105,14 @@ The integrated AI worker can transfer a customer to a trusted enrolled human col
 ## Optional encrypted PWA Web Push
 
 An opt-in per-device subscription can now be registered via authenticated `/v1/ip-calls/push/config` and `/v1/ip-calls/push/subscriptions` endpoints. A bounded SQLite outbox queues RINGING and HANDOFF_OFFERED notifications atomically with their call events, and the existing server sends them only while the invitation is valid. A standalone service worker performs first-party notification display and click-to-resume, never automatically answering the call. See docs/WEB_PUSH_CALLS.md for operator and HTTPS/PWA prerequisites. This is optional and uses no paid provider, but involves Apple/Google/Mozilla's browser push infrastructure.
+
+
+## Embedded first-party call controls
+
+The browser SDK now has a minimal, accessible UI controller implementing
+explicit incoming call, employee handoff, outgoing call, reconnection and
+hangup actions. It verifies stale Web Push invitations and never stores
+identity tokens outside the host-provided memory session. The existing
+host application must provide authentication, bundled LiveKit media,
+routing and final visual design; source level integration is documented
+in BROWSER_CALL_CONSOLE.md. No native cellphone/PSTN features are claimed.
