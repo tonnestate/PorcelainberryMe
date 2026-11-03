@@ -478,6 +478,34 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                 self._event(con, call, caller, "OUTGOING", now)
                 return self._visible(call, caller)
 
+    def active_calls(self, claims: dict) -> dict:
+        """Authenticated snapshot after reconnect or a suspended PWA wake-up.
+
+        Poll cursors can be lost when events expire; a live-call snapshot
+        prevents an otherwise valid unanswered ring or handoff offer from
+        disappearing behind an old browser cursor. The snapshot is scoped
+        to the caller, recipient, or currently invited/connected employee.
+        """
+        with closing(self._open()) as con:
+            with con:
+                rows = con.execute(
+                    "SELECT c.* FROM ip_calls AS c "
+                    "WHERE c.tenant=? AND c.state IN ('RINGING','ACTIVE') "
+                    "AND (c.caller=? OR c.callee=? OR EXISTS("
+                    "SELECT 1 FROM ip_call_handoffs AS h "
+                    "WHERE h.call_id=c.id AND h.tenant=c.tenant "
+                    "AND h.target=? AND h.state IN ('OFFERED','ACCEPTED','CONNECTED')"
+                    ")) ORDER BY c.created_at DESC, c.id LIMIT 100",
+                    (claims["tenant"], claims["sub"], claims["sub"], claims["sub"]),
+                ).fetchall()
+                return {
+                    "calls": [
+                        self._handoff_with_call(con, call, claims["sub"])
+                        for call in rows
+                    ],
+                    "server_time": self._now(),
+                }
+
     def status(self, claims: dict, call_id: str) -> dict:
         with closing(self._open()) as con:
             with con:
@@ -734,6 +762,8 @@ def make_handler(registry: CallRegistry):
                         return self._reply(200, registry.revoke_push(
                             claims, self._body().get("device_id"),
                         ))
+                if self.command == "GET" and uri.path == "/v1/ip-calls/active":
+                    return self._reply(200, registry.active_calls(claims))
                 if self.command == "GET" and uri.path == "/v1/ip-calls/events":
                     qs = parse_qs(uri.query)
                     after = int(qs.get("after", ["0"])[0])
