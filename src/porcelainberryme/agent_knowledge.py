@@ -27,6 +27,7 @@ MAX_ANSWER = 500
 MAX_UNKNOWN = 500
 RETENTION_SECONDS = 14 * 86400
 DEFAULT_UNKNOWN = "Dazu habe ich keine freigegebene Information. Bitte wende dich an das zuständige Team."
+DEFAULT_GREETING = "Guten Tag. Wie kann ich Ihnen helfen?"
 
 
 class KnowledgeError(ValueError):
@@ -61,6 +62,7 @@ def normalize_question(value: str) -> str:
 class AgentProfile:
     tenant: str
     assistant: str
+    greeting: str
     fallback: str
     retain_unknown: bool
 
@@ -84,6 +86,7 @@ class KnowledgeStore:
             con.executescript("""
                 CREATE TABLE IF NOT EXISTS pb_kb_agents (
                     tenant TEXT NOT NULL, assistant TEXT NOT NULL,
+                    greeting TEXT NOT NULL DEFAULT 'Guten Tag. Wie kann ich Ihnen helfen?',
                     fallback TEXT NOT NULL, retain_unknown INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (tenant, assistant)
                 );
@@ -109,6 +112,14 @@ class KnowledgeStore:
                 CREATE INDEX IF NOT EXISTS pb_kb_unknown_retention
                   ON pb_kb_unknown(last_seen);
             """)
+            # Backwards-compatible local SQLite migration for any operator
+            # who created a profile before greeting configuration existed.
+            columns = {row["name"] for row in con.execute("PRAGMA table_info(pb_kb_agents)")}
+            if "greeting" not in columns:
+                con.execute(
+                    "ALTER TABLE pb_kb_agents ADD COLUMN greeting TEXT NOT NULL "
+                    "DEFAULT 'Guten Tag. Wie kann ich Ihnen helfen?'"
+                )
 
     def _connect(self):
         con = sqlite3.connect(self.path, timeout=5)
@@ -125,20 +136,23 @@ class KnowledgeStore:
             raise KnowledgeError("agent_knowledge_profile_missing")
         return profile
 
-    def configure(self, tenant: str, assistant: str, *, fallback: str = DEFAULT_UNKNOWN,
+    def configure(self, tenant: str, assistant: str, *, greeting: str = DEFAULT_GREETING,
+                  fallback: str = DEFAULT_UNKNOWN,
                   retain_unknown: bool = False) -> AgentProfile:
         _id(tenant)
         _id(assistant)
+        greeting = _plain(greeting, MAX_ANSWER, "invalid_greeting")
         fallback = _plain(fallback, MAX_ANSWER, "invalid_fallback")
         if type(retain_unknown) is not bool:
             raise KnowledgeError("invalid_unknown_retention_policy")
         with closing(self._connect()) as con:
             with con:
                 con.execute(
-                    "INSERT INTO pb_kb_agents(tenant,assistant,fallback,retain_unknown) "
-                    "VALUES(?,?,?,?) ON CONFLICT(tenant,assistant) DO UPDATE SET "
-                    "fallback=excluded.fallback,retain_unknown=excluded.retain_unknown",
-                    (tenant, assistant, fallback, int(retain_unknown)),
+                    "INSERT INTO pb_kb_agents(tenant,assistant,greeting,fallback,retain_unknown) "
+                    "VALUES(?,?,?,?,?) ON CONFLICT(tenant,assistant) DO UPDATE SET "
+                    "greeting=excluded.greeting,fallback=excluded.fallback,"
+                    "retain_unknown=excluded.retain_unknown",
+                    (tenant, assistant, greeting, fallback, int(retain_unknown)),
                 )
                 # Turning retention OFF must actively purge previously stored questions.
                 if not retain_unknown:
@@ -146,14 +160,15 @@ class KnowledgeStore:
                         "DELETE FROM pb_kb_unknown WHERE tenant=? AND assistant=?",
                         (tenant, assistant),
                     )
-        return AgentProfile(tenant, assistant, fallback, retain_unknown)
+        return AgentProfile(tenant, assistant, greeting, fallback, retain_unknown)
 
     def profile(self, tenant: str, assistant: str) -> AgentProfile:
         _id(tenant)
         _id(assistant)
         with closing(self._connect()) as con:
             p = self._profile(con, tenant, assistant)
-            return AgentProfile(tenant, assistant, p["fallback"], bool(p["retain_unknown"]))
+            return AgentProfile(tenant, assistant, p["greeting"], p["fallback"],
+                                bool(p["retain_unknown"]))
 
     def propose(self, tenant: str, assistant: str, *, key: str,
                 question: str, answer: str) -> int:
@@ -335,7 +350,8 @@ class ApprovedKnowledgeResponder:
             raise KnowledgeError("approved_knowledge_database_missing")
         self.store = KnowledgeStore(path)
         self.tenant, self.assistant = _id(tenant), _id(assistant)
-        self.store.profile(tenant, assistant)  # fail before dialing if absent
+        self.greeting = self.store.profile(tenant, assistant).greeting
+        # Missing profiles fail before an outbound call is even initiated.
 
     async def respond(self, text: str, history: list[dict]) -> str:
         result = await asyncio.to_thread(
@@ -354,6 +370,7 @@ def main():
         cmd.add_argument("--tenant", required=True)
         cmd.add_argument("--assistant", required=True)
         if name == "configure":
+            cmd.add_argument("--greeting", default=DEFAULT_GREETING)
             cmd.add_argument("--fallback", default=DEFAULT_UNKNOWN)
             cmd.add_argument("--retain-unknown", action="store_true")
         if name == "propose":
@@ -372,7 +389,8 @@ def main():
     store = KnowledgeStore(args.db)
     t, a = args.tenant, args.assistant
     if args.command == "configure":
-        print(store.configure(t, a, fallback=args.fallback,
+        print(store.configure(t, a, greeting=args.greeting,
+                              fallback=args.fallback,
                               retain_unknown=args.retain_unknown))
     elif args.command == "propose":
         print("DRAFT revision", store.propose(
