@@ -439,6 +439,10 @@ def _spoken_slot(text: str) -> str | None:
     remaining = text[:match.start()] + " " + text[match.end():]
     if MULTIPLE_TIME.search(remaining):
         return None
+    # "14 Uhr 3" is an incomplete minute expression. Without this guard
+    # the partial regex would silently reinterpret it as 14:00.
+    if re.match(r"\s*\d{1,2}\b", text[match.end():]):
+        return None
     groups = match.groupdict()
     if groups.get("minute") is not None and groups.get("minute_after") is not None:
         return None
