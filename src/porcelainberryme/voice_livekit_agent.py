@@ -262,6 +262,14 @@ async def call_human(*, target: str, tenant: str, control_token: str,
         llm = ApprovedKnowledgeResponder(approved_db, tenant, agent_id)
     else:
         llm = LocalOllamaResponder(ollama_model)
+    calendar_db = os.environ.get("PB_APPOINTMENT_DB", "").strip()
+    if calendar_db:
+        # Deterministic local calendar operations require explicit spoken
+        # confirmation. Unknown utterances use the existing safe responder.
+        from .appointments import AppointmentVoiceResponder
+        llm = AppointmentVoiceResponder(
+            calendar_db, tenant, agent_id, target, llm,
+        )
     tts = LocalPiperVoice(piper_binary, piper_model)
     client = CallControlClient(control_token)
     identity = await client.whoami()
