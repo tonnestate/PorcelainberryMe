@@ -88,3 +88,10 @@ Technical details: [operator handoff](docs/OPERATIONS.md),
 [optional SIP telephony](docs/SIP_TELEPHONY.md),
 [voice-to-harness integration](docs/VOICE_TO_HARNESS.md) and
 [donor audit](docs/DONOR_AUDIT.md).
+
+
+### Headless Internet Call Control — new feature branch slice
+
+The scope is now an **independently usable headless IP communications platform**, including **agent-initiated calls to registered Internet identities**, not merely a SIP/WhatsApp relay for FruitStack. The initial call-control implementation handles a verified agent's outbound call invitation, recipient-specific ring notifications, explicit answer/decline/hangup, tenant and identity isolation, stable idempotency, timeouts, and issuance of short-lived **self-hosted LiveKit** microphone-only room credentials after acceptance. It uses the standard library and existing SQLite; no paid API is required to run the control plane.
+
+**Not yet a working voice phone or commercial SaaS:** LiveKit media has not been deployed, no independent user app or local AI speech agent is running, and no real WebRTC audio call has passed. Native phone numbers and ordinary cellular calls require a separate PSTN interconnect and cannot be reached over Internet alone at zero provider cost. See [HEADLESS_IP_CALLS.md](docs/HEADLESS_IP_CALLS.md) for the source-only invocation, architecture and remaining hard release gates. The earlier experimental baresip SIP module is not the default media path.
