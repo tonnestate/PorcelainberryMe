@@ -485,6 +485,11 @@ def make_handler(registry: CallRegistry):
                     return self._reply(200, {"status": "up",
                                               "scope": "internet_calls_control_only"})
                 claims = self._auth()
+                if self.command == "GET" and uri.path == "/v1/ip-calls/whoami":
+                    return self._reply(200, {
+                        "tenant": claims["tenant"], "subject": claims["sub"],
+                        "role": claims["role"],
+                    })
                 if self.command == "GET" and uri.path == "/v1/ip-calls/events":
                     qs = parse_qs(uri.query)
                     after = int(qs.get("after", ["0"])[0])
