@@ -134,6 +134,54 @@ class LocalVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(recorded)
         self.assertLessEqual(len(recorded), 16000 * 2 * 16)
 
+    async def test_two_local_voice_failures_close_call_instead_of_silence(self):
+        class FailingLocalModel:
+            async def respond(self, text, history):
+                raise RuntimeError("local model crashed")
+
+        fatal = []
+        stt = FakeSTT()
+        speaker = FakeSpeaker()
+        engine = VoiceTurnEngine(
+            stt, FailingLocalModel(), FakeTTS(), speaker,
+            on_unavailable=lambda: fatal.append("model_unavailable"),
+        )
+        for _ in range(2):
+            await submit_phrase(engine)
+            if engine._worker is not None:
+                await engine._worker
+        self.assertEqual(engine.turn_errors, 2)
+        self.assertEqual(engine.turns_completed, 0)
+        self.assertEqual(fatal, ["model_unavailable"])
+        prior = stt.index
+        await submit_phrase(engine)
+        self.assertEqual(stt.index, prior)
+        await engine.close()
+
+    async def test_successful_reply_resets_consecutive_model_failures(self):
+        class FlakyLocalModel:
+            def __init__(self):
+                self.calls = 0
+            async def respond(self, text, history):
+                self.calls += 1
+                if self.calls in (1, 3):
+                    raise RuntimeError("temporary model fault")
+                return "Jetzt ist das Modell wieder verfügbar."
+
+        fatal = []
+        engine = VoiceTurnEngine(
+            FakeSTT(), FlakyLocalModel(), FakeTTS(), FakeSpeaker(),
+            on_unavailable=lambda: fatal.append("must_not_close"),
+        )
+        for _ in range(3):
+            await submit_phrase(engine)
+            if engine._worker is not None:
+                await engine._worker
+        self.assertEqual(engine.turn_errors, 2)
+        self.assertEqual(engine.turns_completed, 1)
+        self.assertEqual(fatal, [])
+        await engine.close()
+
     async def test_missing_model_fails_closed_no_download(self):
         with self.assertRaises(LocalVoiceUnavailable):
             LocalFasterWhisper("/definitely/no/model")
