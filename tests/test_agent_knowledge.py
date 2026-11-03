@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 import struct
 import tempfile
@@ -75,6 +76,43 @@ class KnowledgeReviewTests(unittest.TestCase):
         self.assertEqual(self.db.entries("tenantA", "another"), [])
         with self.assertRaisesRegex(KnowledgeError, "profile_missing"):
             self.db.answer("tenantA", "missing", "Welche interne Kennzahl gilt?")
+
+    def test_each_assistant_has_own_approved_greeting(self):
+        self.db.configure(
+            "tenantA", "agent",
+            greeting="Willkommen bei unserem Kundenservice.",
+        )
+        self.db.configure(
+            "tenantB", "agent",
+            greeting="Guten Tag beim zweiten Unternehmen.",
+        )
+        self.assertEqual(self.db.profile("tenantA", "agent").greeting,
+                         "Willkommen bei unserem Kundenservice.")
+        self.assertEqual(self.db.profile("tenantB", "agent").greeting,
+                         "Guten Tag beim zweiten Unternehmen.")
+        with self.assertRaisesRegex(KnowledgeError, "invalid_greeting"):
+            self.db.configure("tenantA", "agent", greeting="")
+        with self.assertRaisesRegex(KnowledgeError, "invalid_greeting"):
+            self.db.configure("tenantA", "agent", greeting="x" * 501)
+
+    def test_existing_knowledge_profile_is_migrated_without_data_loss(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = str(Path(folder) / "legacy.sqlite")
+            with sqlite3.connect(path) as con:
+                con.execute(
+                    "CREATE TABLE pb_kb_agents ("
+                    "tenant TEXT NOT NULL, assistant TEXT NOT NULL,"
+                    "fallback TEXT NOT NULL, retain_unknown INTEGER NOT NULL,"
+                    "PRIMARY KEY(tenant, assistant))"
+                )
+                con.execute(
+                    "INSERT INTO pb_kb_agents VALUES (?,?,?,?)",
+                    ("legacy", "assistant", "Alter Fallback", 0),
+                )
+            migrated = KnowledgeStore(path)
+            profile = migrated.profile("legacy", "assistant")
+            self.assertEqual(profile.fallback, "Alter Fallback")
+            self.assertEqual(profile.greeting, "Guten Tag. Wie kann ich Ihnen helfen?")
 
     def test_unknown_question_logging_requires_explicit_opt_in(self):
         self.db.answer("tenantA", "agent", "Wie kann ich einen Rabatt bekommen?")
