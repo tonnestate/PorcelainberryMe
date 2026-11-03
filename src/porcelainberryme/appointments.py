@@ -6,11 +6,13 @@ Voice syntax intentionally narrow: unsupported spoken dates are not guessed.
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -334,6 +336,39 @@ class AppointmentStore:
                     "SELECT * FROM pb_appointments WHERE id=?", (booking_id,)
                 ).fetchone())
 
+    def export_ics(self, tenant: str, assistant: str) -> str:
+        """Read-only iCalendar export. No external calendar write or sharing."""
+        _ident(tenant)
+        _ident(assistant)
+        with closing(self._conn()) as db:
+            self._config(db, tenant, assistant)
+            rows = db.execute(
+                "SELECT id, start_utc, end_utc FROM pb_appointments "
+                "WHERE tenant=? AND assistant=? AND status='BOOKED' "
+                "ORDER BY start_utc LIMIT 1000",
+                (tenant, assistant),
+            ).fetchall()
+        now = datetime.fromtimestamp(self.clock(), timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        lines = [
+            "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//PorcelainberryMe//Local Appointments//DE",
+            "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
+        ]
+        for entry in rows:
+            start = datetime.fromtimestamp(entry["start_utc"], timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            end = datetime.fromtimestamp(entry["end_utc"], timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            lines.extend([
+                "BEGIN:VEVENT",
+                f"UID:{entry['id']}@porcelainberryme.local",
+                f"DTSTAMP:{now}",
+                f"DTSTART:{start}",
+                f"DTEND:{end}",
+                "SUMMARY:Gebuchter Termin",
+                "STATUS:CONFIRMED",
+                "END:VEVENT",
+            ])
+        lines.append("END:VCALENDAR")
+        return "\r\n".join(lines) + "\r\n"
+
     def bookings(self, tenant: str, assistant: str, caller: str) -> list[dict]:
         _ident(tenant)
         _ident(assistant)
@@ -437,3 +472,61 @@ class AppointmentVoiceResponder:
                 "Ja, Termin buchen."
             )
         return await self.fallback.respond(text, history)
+
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Trusted local calendar operations. No public HTTP or paid provider."
+    )
+    parser.add_argument("--db", required=True, help="Absolute private SQLite database path")
+    sub = parser.add_subparsers(dest="command", required=True)
+    for action in ("configure", "slots", "list", "book", "cancel", "export-ics"):
+        cmd = sub.add_parser(action)
+        cmd.add_argument("--tenant", required=True)
+        cmd.add_argument("--assistant", required=True)
+        if action == "configure":
+            cmd.add_argument("--timezone", required=True)
+            cmd.add_argument("--duration-min", required=True, type=int)
+            cmd.add_argument("--weekly-json", required=True,
+                             help='Explicit hours, e.g. {"0":[["09:00","17:00"]]}')
+            cmd.add_argument("--lead-min", type=int, default=DEFAULT_LEAD_MINUTES)
+            cmd.add_argument("--horizon-days", type=int, default=DEFAULT_HORIZON_DAYS)
+        if action == "slots":
+            cmd.add_argument("--date", required=True)
+        if action in ("list", "book", "cancel"):
+            cmd.add_argument("--caller", required=True)
+        if action == "book":
+            cmd.add_argument("--slot", required=True, help="YYYY-MM-DDTHH:MM local")
+            cmd.add_argument("--idempotency-key", required=True)
+        if action == "cancel":
+            cmd.add_argument("--booking-id", required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    db = AppointmentStore(args.db)
+    t, assistant = args.tenant, args.assistant
+    if args.command == "configure":
+        try:
+            hours = json.loads(args.weekly_json)
+        except ValueError as exc:
+            parser.error("invalid_weekly_json")
+        print(db.configure(t, assistant, tz=args.timezone,
+                           weekly=hours, duration_min=args.duration_min,
+                           lead_min=args.lead_min, horizon_days=args.horizon_days))
+    elif args.command == "slots":
+        for slot in db.available(t, assistant, args.date):
+            print(slot)
+    elif args.command == "list":
+        for booking in db.bookings(t, assistant, args.caller):
+            print(booking)
+    elif args.command == "book":
+        print(db.book(t, assistant, args.caller, args.slot,
+                      idempotency_key=args.idempotency_key))
+    elif args.command == "cancel":
+        print(db.cancel(t, assistant, args.caller, args.booking_id))
+    elif args.command == "export-ics":
+        print(db.export_ics(t, assistant), end="")
+
+
+if __name__ == "__main__":
+    main()
