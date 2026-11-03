@@ -210,8 +210,12 @@ class LiveKitAgentCall:
             # Remote audio is already subscribed, so human barge-in can
             # cancel queued greeting playback through VoiceTurnEngine.
             if not self._closed.is_set():
+                # Never play a delayed greeting after the callee has
+                # already started speaking while local TTS was running.
+                greeting_epoch = self._engine._epoch
                 welcome_pcm = await self.tts.synthesize(self.greeting)
-                if not self._closed.is_set():
+                if (not self._closed.is_set()
+                        and greeting_epoch == self._engine._epoch):
                     await speaker.play(welcome_pcm)
             watcher = asyncio.create_task(self._watch_call(call_id))
             waiter = asyncio.create_task(self._closed.wait())
