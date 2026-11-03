@@ -128,6 +128,8 @@ class CallNoteTests(unittest.IsolatedAsyncioTestCase):
             note="Kundenanliegen: Rückruf", excerpts=1,
         )
         self.now[0] += 14 * 86400 + 1
+        self.assertEqual(self.store.prune_expired(), 1)
+        self.assertEqual(self.store.prune_expired(), 0)
         self.assertEqual(self.store.list_notes("firm_a", "agent"), [])
         summary = build_minimal_note(record_turns(
             "Ein sehr langer Informationsblock " + "x" * 1000,
