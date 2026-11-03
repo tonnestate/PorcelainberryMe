@@ -154,6 +154,67 @@ class LocalVoiceTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "invalid_speech_reply"):
                 await piper.synthesize("")
 
+    async def test_local_ollama_preflight_verifies_model_without_download(self):
+        captured = []
+
+        class Response:
+            status = 200
+            def __init__(self, body):
+                self.body = body
+            def read(self, size):
+                return self.body
+
+        class Connection:
+            def __init__(self, host, port, timeout):
+                captured.append((host, port, timeout))
+            def request(self, method, path):
+                captured.append((method, path))
+            def getresponse(self):
+                return Response(json.dumps({
+                    "models": [{"name": "existing-qwen:7b", "model": "existing-qwen:7b"}],
+                }).encode())
+            def close(self):
+                pass
+
+        responder = LocalOllamaResponder("existing-qwen:7b")
+        with patch("http.client.HTTPConnection", Connection):
+            await responder.preflight()
+        self.assertEqual(captured, [
+            ("127.0.0.1", 11434, 5), ("GET", "/api/tags"),
+        ])
+
+        missing = LocalOllamaResponder("different-model:latest")
+        with patch("http.client.HTTPConnection", Connection):
+            with self.assertRaisesRegex(LocalVoiceUnavailable, "model_not_installed"):
+                await missing.preflight()
+
+    async def test_ollama_not_running_fails_before_agent_can_dial(self):
+        def unreachable(host, port, timeout):
+            raise ConnectionRefusedError("no local Ollama daemon")
+
+        with patch("http.client.HTTPConnection", unreachable):
+            with self.assertRaisesRegex(LocalVoiceUnavailable, "local_ollama_unreachable"):
+                await LocalOllamaResponder("qwen:7b").preflight()
+
+    async def test_corrupt_local_model_registry_fails_closed(self):
+        class Connection:
+            def __init__(self, host, port, timeout):
+                pass
+            def request(self, method, path):
+                pass
+            def getresponse(self):
+                class Bad:
+                    status = 200
+                    def read(self, size):
+                        return b"{invalid-json"
+                return Bad()
+            def close(self):
+                pass
+
+        with patch("http.client.HTTPConnection", Connection):
+            with self.assertRaisesRegex(LocalVoiceUnavailable, "registry_invalid"):
+                await LocalOllamaResponder("qwen:7b").preflight()
+
     async def test_local_ollama_is_loopback_only(self):
         recorded = []
 
