@@ -21,7 +21,7 @@ Sources:
 | Low-latency natural conversation | Yes | PCM pipeline and whole-turn offline speech backends; no live quality proof | German latency/interruption field trials |
 | Many voices/languages | 120+ voices, 60+ languages listed | One explicitly installed local Piper voice; German local STT setting | Model inventory, licenses, pronunciation, tests |
 | Configurable assistants | Unlimited assistants listed | Basic per-tenant agent identity and now reviewed FAQ profile; no customer portal | Secure self-service enrollment, greeting, workflow, permissions |
-| Business website/docs knowledge | Website content, self-learning knowledge and approvals | NEW: manually reviewed, exact-question FAQ, no scraping or semantic RAG | Document ingestion, provenance, semantic retrieval, review inbox |
+| Business website/docs knowledge | Website content, self-learning knowledge and approvals | NEW: local approved text/Markdown document paragraphs plus exact FAQ, revision-specific approval and source title; no website crawling, PDF parser or semantic RAG | Automatic ingestion, multilingual semantic retrieval, evidence evaluation and review UI |
 | Conditional call opening | Yes | NEW: per-assistant spoken greeting at call start; conditional start-rules absent | Per-agent condition engine and real listening test |
 | Calendar/appointment actions | Yes | NEW: local calendar availability, concurrency-safe confirmed voice bookings, own-booking cancellation and ICS export; no external calendar sync or rescheduling | Real provider calendar adapters, reminders, team booking, flexible speech dates and end-to-end validation |
 | Live handoff to a person | Yes | Ending an IP call works; verified transfer/handoff not implemented | Consent-aware transfer + agent context handoff |
@@ -39,7 +39,7 @@ reviewed FAQ system with explicit human approval, a spoken greeting, revision-in
 edits, tenant/assistant isolation, on-demand disabling, safe unknown-answer
 fallback and opt-in question inbox with bounded retention. The autonomous
 WebRTC voice worker actually selects that responder when configured.
-Current matching is normalized exact-question lookup, not semantic RAG;
+Current FAQ matching is normalized exact-question lookup; document excerpts now use conservative lexical paragraph retrieval with approval, not semantic RAG;
 do not advertise it as full Fonio knowledge parity or self-learning.
 
 The new autonomous appointment integration is documented in docs/APPOINTMENTS.md.
@@ -81,3 +81,8 @@ P3: Optional customer-funded lawful PSTN/SIP carrier integration. Public
 number calling cannot be included in an absolute zero-carrier-cost claim.
 
 Do not mark any feature production-ready solely because offline CI passes.
+
+
+## Reviewed documents milestone
+
+Reviewable UTF-8 TXT/Markdown paragraphs, document revision approvals, source-title provenance, tenant isolation and fail-closed ambiguity checks are implemented through docs/DOCUMENT_KNOWLEDGE.md. They are integrated into the existing autonomous voice responder, but no website/PDF ingestion or semantic citations are claimed.
