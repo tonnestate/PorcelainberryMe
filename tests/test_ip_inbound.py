@@ -198,7 +198,9 @@ class InboundAgentControlTests(unittest.TestCase):
             })
         self.assertEqual(self.db.status(self.customer, call["id"])["state"],
                          "ACTIVE")
-        with self.assertRaisesRegex(CallError, "agent_already_handed_off"):
+        # Finished handoff deletes the inbound lease, so the departed
+        # worker has no valid token to obtain fresh room credentials.
+        with self.assertRaisesRegex(CallError, "inbound_lease_lost"):
             self.db.media_credentials(self.agent, call["id"], inbound_lease=lease)
         with self.assertRaisesRegex(CallError, "not_authorized_to_hangup"):
             self.db.decide(self.agent, call["id"], "hangup")
