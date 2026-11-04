@@ -118,10 +118,70 @@ class TrustedStasisTests(unittest.IsolatedAsyncioTestCase):
 
         # Real _serve_one creates the session, but only the preflight/bridging
         # step is stubbed. A separate ARI test verifies real GET/POST/DELETE.
+        async def completed_call(session, method, endpoint, query=None):
+            if (method, endpoint) == ("GET", "/channels/PJSIP-1234.1"):
+                return channel()
+            if (method, endpoint) == ("POST", "/channels/PJSIP-1234.1/continue"):
+                observed.append("continued")
+                return None
+            raise AssertionError("unapproved_ari_operation")
+
         with patch("porcelainberryme.asterisk_stasis.serve_authorized_ari_call",
-                   new=examine):
+                   new=examine), patch.object(
+                       worker.ari, "_call", new=completed_call,
+                   ):
             await worker._serve_one("PJSIP-1234.1")
-        self.assertEqual(observed, ["PJSIP-1234.1"])
+        self.assertEqual(observed, ["PJSIP-1234.1", "continued"])
+
+    async def test_failed_media_still_returns_verified_caller_to_dialplan(self):
+        try:
+            import aiohttp
+        except ImportError:
+            self.skipTest("optional aiohttp not installed")
+        worker = listener()
+        operations = []
+
+        async def failed_media(**kwargs):
+            raise RuntimeError("simulated_speech_failure")
+
+        async def authorized_get(session, method, endpoint, query=None):
+            operations.append((method, endpoint))
+            if method == "GET":
+                return channel()
+            return None
+
+        with patch("porcelainberryme.asterisk_stasis.serve_authorized_ari_call",
+                   new=failed_media), patch.object(
+                       worker.ari, "_call", new=authorized_get,
+                   ):
+            with self.assertRaisesRegex(RuntimeError, "simulated"):
+                await worker._serve_one("PJSIP-1234.1")
+        self.assertIn(("POST", "/channels/PJSIP-1234.1/continue"), operations)
+
+    async def test_untrusted_channel_state_never_gets_returned_by_our_host(self):
+        try:
+            import aiohttp
+        except ImportError:
+            self.skipTest("optional aiohttp not installed")
+        worker = listener()
+        operations = []
+
+        async def denied(**kwargs):
+            raise PermissionError("caller_not_authorized")
+
+        async def wrong_get(session, method, endpoint, query=None):
+            operations.append((method, endpoint))
+            return channel(context="untrusted")
+
+        with patch("porcelainberryme.asterisk_stasis.serve_authorized_ari_call",
+                   new=denied), patch.object(
+                       worker.ari, "_call", new=wrong_get,
+                   ):
+            with self.assertRaises(PermissionError):
+                await worker._serve_one("PJSIP-1234.1")
+        self.assertEqual(
+            operations, [("GET", "/channels/PJSIP-1234.1")],
+        )
 
     def test_invalid_route_or_limits_fail_closed(self):
         for kwargs in (
