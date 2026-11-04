@@ -20,7 +20,9 @@ function fakeClient(dial) {
       assert.equal(path, '/v1/ip-calls/whoami');
       return { tenant: 'company', subject: 'agent', role: 'agent' };
     },
-    dial, startPolling() {}, stopPolling() {}, async disconnect() {},
+    dial, startPolling() {}, stopPolling() {}, async pollOnce() {
+      return { events: [] };
+    }, async disconnect() {},
   };
 }
 async function controller(client, store) {
