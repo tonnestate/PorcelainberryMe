@@ -18,6 +18,7 @@ class ARILoopbackTests(unittest.IsolatedAsyncioTestCase):
         self.web = web
         self.events = []
         self.media_fails = False
+        self.caller_state = "Up"
         app = web.Application()
         app.router.add_route("*", "/ari/{tail:.*}", self.handler)
         self.runner = web.AppRunner(app)
@@ -39,7 +40,10 @@ class ARILoopbackTests(unittest.IsolatedAsyncioTestCase):
         if request.headers.get("Authorization") != auth:
             return self.web.Response(status=401)
         if request.method == "GET" and path == f"/channels/{CHANNEL}":
-            return self.web.json_response({"id": CHANNEL, "state": "Up"})
+            return self.web.json_response({"id": CHANNEL, "state": self.caller_state})
+        if request.method == "POST" and path == f"/channels/{CHANNEL}/answer":
+            self.caller_state = "Up"
+            return self.web.Response(status=204)
         if request.method == "POST" and path == "/bridges":
             return self.web.json_response({"id": "bridge-1"})
         if request.method == "POST" and path == "/channels/externalMedia":
@@ -76,6 +80,44 @@ class ARILoopbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("DELETE", "/bridges/bridge-1", {}), self.events)
         self.assertFalse(any("DELETE" == method and CHANNEL in path
                              for method, path, _ in self.events))
+
+    async def test_ringing_trusted_channel_is_answered_exactly_once(self):
+        from aiohttp import ClientSession
+        self.caller_state = "Ringing"
+        async with ClientSession() as session:
+            bound = await self.ari.prepare(
+                session, caller_channel_id=CHANNEL, stasis_app="voicebot",
+                authorize_channel=lambda record: record["id"] == CHANNEL,
+            )
+            await self.ari.cleanup(session, bound)
+        names = [(method, path) for method, path, _ in self.events]
+        self.assertEqual(names.count(("POST", f"/channels/{CHANNEL}/answer")), 1)
+        self.assertLess(names.index(("POST", f"/channels/{CHANNEL}/answer")),
+                        names.index(("POST", "/bridges")))
+        self.assertFalse(any(method == "DELETE" and path == f"/channels/{CHANNEL}"
+                             for method, path in names))
+
+    async def test_answered_caller_must_be_up_before_media(self):
+        from aiohttp import ClientSession
+        self.caller_state = "Down"
+        async with ClientSession() as session:
+            with self.assertRaisesRegex(PermissionError, "media_state"):
+                await self.ari.prepare(
+                    session, caller_channel_id=CHANNEL, stasis_app="voicebot",
+                    authorize_channel=lambda _: True,
+                )
+        self.assertEqual(len(self.events), 1)
+
+    async def test_denied_ringing_caller_is_never_answered(self):
+        from aiohttp import ClientSession
+        self.caller_state = "Ringing"
+        async with ClientSession() as session:
+            with self.assertRaises(PermissionError):
+                await self.ari.prepare(
+                    session, caller_channel_id=CHANNEL, stasis_app="voicebot",
+                    authorize_channel=lambda _: False,
+                )
+        self.assertEqual(len(self.events), 1)
 
     async def test_failed_permission_does_not_create_or_answer(self):
         from aiohttp import ClientSession
