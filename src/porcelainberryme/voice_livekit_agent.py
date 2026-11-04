@@ -553,8 +553,10 @@ def main():
     required = ("control_token", "whisper_model", "piper_binary", "piper_model")
     if any(not settings[name] for name in required):
         parser.error("local speech files and agent identity token are required")
-    if not settings["ollama_model"] and not os.environ.get("PB_AGENT_KNOWLEDGE_DB"):
-        parser.error("local Ollama model or approved agent knowledge DB is required")
+    if (not settings["ollama_model"]
+            and not os.environ.get("PB_LOCAL_VOICE_CHAT_MODEL")
+            and not os.environ.get("PB_AGENT_KNOWLEDGE_DB")):
+        parser.error("local Ollama voice model or approved knowledge DB is required")
     asyncio.run(call_human(
         target=args.to, tenant=args.tenant,
         agent_id=args.agent, request_id=args.request_id, **settings,
