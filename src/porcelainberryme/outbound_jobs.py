@@ -53,7 +53,17 @@ class DurableCallJobs:
     including after process death, lost ack or a service restart.
     """
 
-    def __init__(self, database: str | Path, *, clock: Callable[[], float] = time.time):
+    def __init__(self, database: str | Path, *, clock: Callable[[], float] = time.time,
+                 max_pending_per_agent: int = 64,
+                 max_retained_per_agent: int = 10000):
+        if (type(max_pending_per_agent) is not int
+                or not 1 <= max_pending_per_agent <= 1024):
+            raise ValueError("outbound_pending_limit_invalid")
+        if (type(max_retained_per_agent) is not int
+                or not max_pending_per_agent <= max_retained_per_agent <= 1000000):
+            raise ValueError("outbound_retained_limit_invalid")
+        self.max_pending_per_agent = max_pending_per_agent
+        self.max_retained_per_agent = max_retained_per_agent
         path = Path(database)
         if not path.is_absolute() or not path.parent.is_dir():
             raise ValueError("absolute_existing_call_jobs_directory_required")
@@ -94,6 +104,8 @@ class DurableCallJobs:
                 );
                 CREATE INDEX IF NOT EXISTS outbound_calls_claim_idx
                   ON outbound_call_jobs(tenant,agent,state,created_at);
+                CREATE INDEX IF NOT EXISTS outbound_calls_consent_idx
+                  ON outbound_call_jobs(tenant,agent,recipient,consent_fingerprint);
             """)
 
     @contextmanager
@@ -136,10 +148,45 @@ class DurableCallJobs:
         if type(ttl_seconds) is not int or not 30 <= ttl_seconds <= 300:
             raise CallApprovalError("invalid_call_approval_ttl")
         now = int(self.clock())
-        approval_id = secrets.token_hex(16)
         digest = sha256(consent_reference.encode("utf-8")).hexdigest()
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
+            # The host's immutable consent event ID is also the *approval*
+            # idempotency key. Retrying an uncertain approval HTTP/CLI result
+            # must not mint a second dial authority for the same consent.
+            existing = db.execute("""
+                SELECT approval_id FROM outbound_call_jobs
+                WHERE tenant=? AND agent=? AND recipient=?
+                  AND consent_fingerprint=?
+                ORDER BY created_at, approval_id LIMIT 1
+            """, (tenant, agent, recipient, digest)).fetchone()
+            if existing is not None:
+                db.commit()
+                return existing["approval_id"]
+
+            # Keep expiry maintenance inside the admission transaction.
+            # Disabled/expired consents must never occupy the live queue.
+            db.execute("""
+                UPDATE outbound_call_jobs SET state='EXPIRED'
+                WHERE tenant=? AND agent=? AND state IN ('APPROVED','QUEUED')
+                  AND expires_at<=?
+            """, (tenant, agent, now))
+            pending = db.execute("""
+                SELECT COUNT(*) FROM outbound_call_jobs
+                WHERE tenant=? AND agent=? AND state IN ('APPROVED','QUEUED')
+            """, (tenant, agent)).fetchone()[0]
+            if pending >= self.max_pending_per_agent:
+                db.rollback()
+                raise CallApprovalError("outbound_pending_capacity_exceeded")
+            retained = db.execute("""
+                SELECT COUNT(*) FROM outbound_call_jobs
+                WHERE tenant=? AND agent=?
+            """, (tenant, agent)).fetchone()[0]
+            if retained >= self.max_retained_per_agent:
+                db.rollback()
+                raise CallApprovalError("outbound_retained_capacity_exceeded")
+
+            approval_id = secrets.token_hex(16)
             db.execute("""
                 INSERT INTO outbound_call_jobs
                 (approval_id,tenant,agent,recipient,consent_fingerprint,
