@@ -149,6 +149,105 @@ class TrustedStasisTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stopped.is_set())
         self.assertEqual(worker.failed, 0)
 
+    async def test_bursty_overload_queues_beyond_four_returns_without_losing_calls(self):
+        worker = listener(max_calls=1)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        returned = []
+
+        async def active_call(channel_id):
+            started.set()
+            await asyncio.Event().wait()
+
+        async def slow_return(channel_id):
+            await release.wait()
+            returned.append(channel_id)
+
+        worker._serve_one = active_call
+        worker._reject_busy = slow_return
+        self.assertTrue(worker.accept_event(stasis_event()))
+        await asyncio.wait_for(started.wait(), 1)
+        for n in range(12):
+            self.assertFalse(worker.accept_event(stasis_event(
+                channel(f"PJSIP-denied.{n}"),
+            )))
+        await asyncio.sleep(0)
+        self.assertEqual(len(worker._busy_returns), 4)
+        self.assertEqual(len(worker._busy_pending), 8)
+        self.assertEqual(worker.overload_exhausted, 0)
+
+        # A caller hanging up before a queued return must be removed,
+        # rather than receiving a late ARI continue.
+        self.assertTrue(worker.accept_event({
+            "type": "StasisEnd", "application": APP,
+            "channel": channel("PJSIP-denied.11"),
+        }))
+        self.assertEqual(len(worker._busy_pending), 7)
+        release.set()
+
+        async def drained():
+            while worker._busy_returns or worker._busy_pending:
+                await asyncio.sleep(0.005)
+
+        await asyncio.wait_for(drained(), 2)
+        self.assertEqual(len(returned), 11)
+        self.assertNotIn("PJSIP-denied.11", returned)
+        self.assertEqual(worker.dispatched, 1)
+        await worker.close()
+
+    async def test_shutdown_drains_queued_returns_after_stopping_voice(self):
+        worker = listener(max_calls=1)
+        returned = []
+        active = asyncio.Event()
+
+        async def active_call(channel_id):
+            active.set()
+            await asyncio.Event().wait()
+
+        async def return_call(channel_id):
+            await asyncio.sleep(0)
+            returned.append(channel_id)
+
+        worker._serve_one = active_call
+        worker._reject_busy = return_call
+        self.assertTrue(worker.accept_event(stasis_event()))
+        await asyncio.wait_for(active.wait(), 1)
+        for n in range(9):
+            self.assertFalse(worker.accept_event(stasis_event(
+                channel(f"PJSIP-denied.{n}"),
+            )))
+        await asyncio.wait_for(worker.close(), 3)
+        self.assertEqual(len(returned), 9)
+        self.assertEqual(worker._busy_pending, [])
+        self.assertFalse(worker.accept_event(stasis_event(channel("PJSIP-new.1"))))
+
+    async def test_exhausted_overload_queue_reports_but_does_not_spawn_unbounded(self):
+        worker = listener(max_calls=1)
+        worker.max_busy_pending = 1
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def active_call(channel_id):
+            started.set()
+            await asyncio.Event().wait()
+
+        async def stalled_return(channel_id):
+            await release.wait()
+
+        worker._serve_one = active_call
+        worker._reject_busy = stalled_return
+        self.assertTrue(worker.accept_event(stasis_event()))
+        await asyncio.wait_for(started.wait(), 1)
+        for n in range(7):
+            self.assertFalse(worker.accept_event(stasis_event(
+                channel(f"PJSIP-denied.{n}"),
+            )))
+        self.assertEqual(len(worker._busy_returns), 4)
+        self.assertEqual(len(worker._busy_pending), 1)
+        self.assertEqual(worker.overload_exhausted, 2)
+        release.set()
+        await asyncio.wait_for(worker.close(), 3)
+
     async def test_capacity_rejection_returns_only_verified_channel_to_dialplan(self):
         worker = listener(max_calls=1)
         active_started = asyncio.Event()
@@ -407,6 +506,14 @@ class TrustedStasisTests(unittest.IsolatedAsyncioTestCase):
                     TrustedStasisRoute(**kwargs)
         with self.assertRaises(ValueError):
             listener(max_calls=5)
+        worker = listener()
+        with self.assertRaises(ValueError):
+            AsteriskStasisListener(
+                ari=worker.ari, route=worker.route,
+                tenant="tenantA", assistant="assistant",
+                voice_settings=worker.voice_settings,
+                max_busy_pending=0,
+            )
 
 
 class NetworkStasisTests(unittest.IsolatedAsyncioTestCase):
