@@ -56,15 +56,18 @@ test('browser self-call sends only idempotency key and signed bearer', async () 
     },
   });
   assert.equal((await client.requestSelfCall('clicked-call-0001')).state, 'QUEUED');
+  assert.equal((await client.selfCallStatus(APPROVAL)).state, 'REVOKED');
   assert.equal((await client.revokeSelfCall(APPROVAL)).state, 'REVOKED');
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 3);
   assert.equal(requests[0].url, 'https://calls.example.test/v1/ip-calls/call-me');
   assert.deepEqual(JSON.parse(requests[0].options.body), {
     idempotency_key: 'clicked-call-0001',
   });
   assert.equal(requests[0].options.headers.Authorization, 'Bearer signed-human-jwt');
-  assert.equal(requests[1].options.method, 'DELETE');
-  assert.deepEqual(JSON.parse(requests[1].options.body), {
+  assert.equal(requests[1].options.method, 'GET');
+  assert.match(requests[1].url, /call-me\?approval_id=[a-f0-9]{32}$/);
+  assert.equal(requests[2].options.method, 'DELETE');
+  assert.deepEqual(JSON.parse(requests[2].options.body), {
     approval_id: APPROVAL,
   });
   await assert.rejects(client.requestSelfCall('x'), /stable_self_call_request_id/);
@@ -105,6 +108,28 @@ test('explicit PWA call-me click survives uncertain server response and reload',
   assert.equal(resumed.state.selfCallApprovalId, null);
   assert.equal(storage.list().length, 0);
   await resumed.destroy();
+});
+
+test('a new self-call needs an explicit click and a terminal previous job', async () => {
+  const ids = [];
+  let current = { ...queued };
+  const client = fakeHuman(async key => {
+    ids.push(key);
+    return queued;
+  }, async () => ({ ...queued, state: 'REVOKED', revocation_confirmed: true }));
+  client.selfCallStatus = async approvalId => {
+    assert.equal(approvalId, APPROVAL);
+    return current;
+  };
+  const ui = await create(client, store());
+  assert.equal(await ui.callMe(), true);
+  assert.equal(await ui.callMe(), false);
+  assert.equal(ids.length, 1);
+  current = { ...queued, state: 'FINISHED_UNVERIFIED' };
+  assert.equal(await ui.callMe(), true);
+  assert.equal(ids.length, 2);
+  assert.notEqual(ids[0], ids[1]);
+  await ui.destroy();
 });
 
 test('self-call is unavailable to an AI agent and cannot be silently placed', async () => {
