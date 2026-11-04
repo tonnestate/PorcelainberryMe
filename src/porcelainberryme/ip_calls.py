@@ -829,6 +829,72 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
         return {"reviewed": len(jobs), "completed": completed, "retry_pending": retried}
 
 
+class BoundedCallHTTPServer(ThreadingHTTPServer):
+    """A strict concurrency cap for the loopback call-control ingress.
+
+    The standard ThreadingHTTPServer creates an unbounded native thread for
+    each connection. A stuck or malicious local proxy client could exhaust
+    all Python workers. Reject excess connections immediately rather than
+    delaying existing live-call control. Per-socket timeouts prevent idle
+    clients from pinning a capacity slot indefinitely.
+    """
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address, handler, *, max_connections: int = 64,
+                 request_timeout: float = 10):
+        if (type(max_connections) is not int
+                or not 1 <= max_connections <= 256):
+            raise ValueError("call_http_connection_limit_invalid")
+        if (not isinstance(request_timeout, (int, float))
+                or not 1 <= request_timeout <= 30):
+            raise ValueError("call_http_request_timeout_invalid")
+        if (not isinstance(address, tuple) or len(address) != 2
+                or address[0] != "127.0.0.1"):
+            raise ValueError("call_http_must_bind_to_loopback")
+        self._slots = threading.BoundedSemaphore(max_connections)
+        self._request_timeout = float(request_timeout)
+        super().__init__(address, handler)
+
+    def get_request(self):
+        sock, addr = super().get_request()
+        sock.settimeout(self._request_timeout)
+        return sock, addr
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Connection: close\r\n"
+                    b"Cache-Control: no-store\r\n"
+                    b"Content-Length: 0\r\n\r\n"
+                )
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+    def handle_error(self, request, client_address):
+        # Never write HTTP authorization headers, request bodies, caller IDs,
+        # filesystem paths or caught exception string to server logs.
+        import sys
+        print("ip_call_http_handler_error", file=sys.stderr)
+
+
 def make_handler(registry: CallRegistry):
     """Loopback-only headless API; external TLS/auth proxy is separate."""
     class Handler(BaseHTTPRequestHandler):
@@ -1044,7 +1110,8 @@ def main():
             args.tenant, args.assistant, None if args.disable else args.staff,
         )
         return
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(registry))
+    server = BoundedCallHTTPServer(("127.0.0.1", args.port),
+                                   make_handler(registry))
     stop = threading.Event()
     worker = None
     terminator = None
