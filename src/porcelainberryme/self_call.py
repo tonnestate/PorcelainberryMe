@@ -73,6 +73,17 @@ class AuthenticatedSelfCall:
                 raise CallError("call_me_queue_capacity_exceeded", 429) from exc
             raise CallError("call_me_approval_rejected", 409) from exc
 
+    def status(self, claims, approval_id: str) -> dict:
+        """Read only this signed human's fixed-recipient approval state."""
+        tenant, recipient = self._human(claims)
+        try:
+            return self.jobs.status(
+                approval_id=approval_id, tenant=tenant,
+                agent=self.agent_id, recipient=recipient,
+            )
+        except (CallApprovalError, PermissionError, TypeError) as exc:
+            raise CallError("call_me_approval_not_found", 404) from exc
+
     def revoke(self, claims, body: dict) -> dict:
         tenant, recipient = self._human(claims)
         if not isinstance(body, dict) or set(body) != {"approval_id"}:
