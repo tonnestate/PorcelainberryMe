@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import signal
 from unittest.mock import patch
 import unittest
 
 from porcelainberryme.asterisk_ari import AsteriskARI
 from porcelainberryme.asterisk_stasis import (
     AsteriskStasisListener, StasisListenerError, TrustedStasisRoute,
+    serve_with_signals,
 )
 
 APP = "porcelain_voice"
@@ -50,6 +52,37 @@ def listener(*, port=8088, max_calls=1):
 
 
 class TrustedStasisTests(unittest.IsolatedAsyncioTestCase):
+    async def test_supervisor_sigterm_requests_clean_session_shutdown(self):
+        worker = listener()
+        registered, unregistered = {}, []
+        observed = []
+        loop = asyncio.get_running_loop()
+
+        def add_handler(signum, callback):
+            registered[signum] = callback
+
+        def remove_handler(signum):
+            unregistered.append(signum)
+            return True
+
+        async def fake_serve(*, stop_event):
+            observed.append("service_started")
+            self.assertIn(signal.SIGTERM, registered)
+            self.assertIn(signal.SIGINT, registered)
+            registered[signal.SIGTERM]()
+            await asyncio.wait_for(stop_event.wait(), 1)
+            observed.append("clean_shutdown")
+
+        with patch.object(loop, "add_signal_handler", new=add_handler), (
+                patch.object(loop, "remove_signal_handler",
+                             new=remove_handler)), (
+                patch.object(worker, "serve", new=fake_serve)):
+            await asyncio.wait_for(serve_with_signals(worker), 2)
+        self.assertEqual(observed, ["service_started", "clean_shutdown"])
+        self.assertEqual(
+            set(unregistered), {signal.SIGTERM, signal.SIGINT},
+        )
+
     async def test_untrusted_or_spoofed_route_denied_before_media(self):
         worker = listener()
         invocations = []
