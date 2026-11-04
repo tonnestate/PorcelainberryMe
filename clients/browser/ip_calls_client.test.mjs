@@ -8,6 +8,7 @@ test('headless client rings, accepts, connects to room, and ends without PSTN', 
   let connected = false;
   let disconnected = false;
   let subscribed = null;
+  const microphoneStates = [];
   const roomFactory = () => ({
     on(event, callback) {
       assert.equal(event, 'trackSubscribed');
@@ -20,7 +21,7 @@ test('headless client rings, accepts, connects to room, and ends without PSTN', 
     },
     localParticipant: {
       async setMicrophoneEnabled(enabled) {
-        assert.equal(enabled, true);
+        microphoneStates.push(enabled);
       },
     },
     async disconnect() { disconnected = true; },
@@ -64,11 +65,18 @@ test('headless client rings, accepts, connects to room, and ends without PSTN', 
   await client.accept('c1');
   await client.connect('c1');
   assert.equal(connected, true);
+  assert.deepEqual(microphoneStates, [true]);
+  assert.deepEqual(await client.setMicrophoneMuted(true), { muted: true });
+  assert.deepEqual(await client.setMicrophoneMuted(false), { muted: false });
+  assert.deepEqual(microphoneStates, [true, false, true]);
+  await assert.rejects(() => client.setMicrophoneMuted('true'),
+    /invalid_microphone_muted/);
   subscribed({ kind: 'audio', id: 'remote-track' });
   assert.equal(received[1].id, 'remote-track');
   await client.hangup('c1');
   assert.equal(disconnected, true);
   assert.equal(client.room, null);
+  await assert.rejects(() => client.setMicrophoneMuted(true), /media_not_connected/);
   assert.equal(requests[0].options.headers.Authorization, 'Bearer signed-human-token');
   assert.equal(JSON.parse(requests[0].options.body).to, 'bob');
 });
