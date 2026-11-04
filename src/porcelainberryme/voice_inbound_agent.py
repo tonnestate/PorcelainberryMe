@@ -243,8 +243,10 @@ def main():
         parser.error("PB_CALL_IDENTITY_SECRET required in trusted local worker")
     if any(not settings[k] for k in ("whisper_model", "piper_binary", "piper_model")):
         parser.error("locally installed Whisper and Piper models are required")
-    if not settings["ollama_model"] and not os.environ.get("PB_AGENT_KNOWLEDGE_DB"):
-        parser.error("local Ollama model or approved knowledge DB required")
+    if (not settings["ollama_model"]
+            and not os.environ.get("PB_LOCAL_VOICE_CHAT_MODEL")
+            and not os.environ.get("PB_AGENT_KNOWLEDGE_DB")):
+        parser.error("local Ollama voice model or approved knowledge DB required")
     asyncio.run(serve_inbound(
         tenant=args.tenant, agent_id=args.agent,
         identity_secret=secret, **settings,
