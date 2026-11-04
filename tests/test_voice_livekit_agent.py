@@ -353,6 +353,9 @@ class VoiceLiveKitTests(unittest.IsolatedAsyncioTestCase):
                 self.events["track_subscribed"](old, SimpleNamespace(), participant)
                 await asyncio.sleep(0.02)
                 self.events["track_unsubscribed"](old, SimpleNamespace(), participant)
+                # SDKs may also drop a remote participant without emitting
+                # another unsubscribed event. Both paths must be idempotent.
+                self.events["participant_disconnected"](participant)
                 self.events["track_subscribed"](new, SimpleNamespace(), participant)
                 # Same publication may be emitted twice by the SDK: only
                 # one audio stream must consume it.
