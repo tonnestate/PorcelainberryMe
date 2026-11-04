@@ -40,6 +40,7 @@ class MCPProtocolTests(unittest.IsolatedAsyncioTestCase):
                         "porcelainberryme_active_calls",
                         "porcelainberryme_call_status",
                         "porcelainberryme_call_events",
+                        "porcelainberryme_call_report",
                     })
                     self.assertFalse(any(
                         word in item.name
