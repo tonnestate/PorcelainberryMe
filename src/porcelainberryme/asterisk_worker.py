@@ -103,7 +103,9 @@ def main():
     if (any(not fields[k] for k in (
             "channel_id", "connection_id", "tenant", "agent_id",
             "whisper_model", "piper_binary", "piper_model"))
-            or not (fields["ollama_model"] or os.environ.get("PB_AGENT_KNOWLEDGE_DB"))):
+            or not (fields["ollama_model"]
+                    or os.environ.get("PB_LOCAL_VOICE_CHAT_MODEL")
+                    or os.environ.get("PB_AGENT_KNOWLEDGE_DB"))):
         parser.error("authenticated ARI channel and installed local voice resources required")
     try:
         port = int(os.environ.get("PB_ASTERISK_WS_PORT", "8088"))
