@@ -349,6 +349,11 @@ class VoiceLiveKitTests(unittest.IsolatedAsyncioTestCase):
                     "d" * 32, "tenantA", "human1",
                 )
                 participant = SimpleNamespace(identity=identity)
+                screen = SimpleNamespace(kind=1, name="screen-audio")
+                self.events["track_subscribed"](
+                    screen, SimpleNamespace(source="screen_share_audio"),
+                    participant,
+                )
                 old = SimpleNamespace(kind=1, name="old")
                 new = SimpleNamespace(kind=1, name="new")
                 self.events["track_subscribed"](old, SimpleNamespace(source=2), participant)
