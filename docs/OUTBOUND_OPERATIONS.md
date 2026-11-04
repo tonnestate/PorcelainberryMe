@@ -81,6 +81,31 @@ Repeated consumption of the same approved ID is idempotent, including
 across MCP/worker restarts. The worker reuses that ID as the existing
 call-control idempotency key.
 
+## Stop an approved call before the worker dials
+
+The authenticated first-party host may withdraw an approved or QUEUED
+call authorization atomically. The operation is **not** available as a
+model-visible MCP write tool. The trusted host invokes
+DurableCallJobs.revoke(approval_id, tenant, agent, recipient), or the
+local CLI with explicit host-only permission:
+
+  PB_CALL_REVOCATION_HOST_ENABLED=1 python -m porcelainberryme.outbound_jobs revoke --tenant TENANT --agent AGENT --recipient INTERNET_USER --approval-id APPROVED_REQUEST_ID
+
+The result is REVOKED only when the SQLite transaction confirmed that
+the worker had NOT yet claimed the job. The entire approval record remains
+available under normal retention; re-submitting the prior approval
+cannot create a new invitation. The same operation is idempotent across
+restarts. Existing ledger files are migrated in place with a
+nullable revoked_at column, without inventing new outcomes for
+historic records.
+
+If the worker reached DISPATCHING first, revocation reports
+DISPATCHING with revocation_confirmed=false. It cannot claim to
+cancel an already ringing or accepted WebRTC call. The authenticated
+host must instead use the existing per-call control API/hangup and
+verify the real terminal state. The concurrent claim/revoke race is
+covered by regression tests.
+
 ## Long-lived Hermes MCP process
 
 Configure an MCP stdio server in the existing Hermes configuration with
