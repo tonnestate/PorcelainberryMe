@@ -70,8 +70,9 @@ class AsteriskARI:
                 if not payload:
                     return None
                 try:
-                    return await response.json(content_type=None)
-                except (ValueError, TypeError) as exc:
+                    import json
+                    return json.loads(payload)
+                except (ValueError, TypeError, UnicodeDecodeError) as exc:
                     raise ARIProtocolError("asterisk_ari_invalid_json") from exc
         except (ClientError, TimeoutError, OSError) as exc:
             # Do NOT automatically retry: ARI may have already performed
