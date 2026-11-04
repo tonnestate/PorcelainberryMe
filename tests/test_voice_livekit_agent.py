@@ -296,6 +296,86 @@ class VoiceLiveKitTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("Ich stimme", notes[0].text)
             self.assertEqual(notes[0].excerpts, 1)
 
+    async def test_microphone_track_resubscription_resets_partial_pcm_and_recovers(self):
+        rtc = SimpleNamespace(**{k: getattr(FakeRTC, k) for k in (
+            "TrackKind", "TrackSource", "AudioFrame", "AudioSource",
+            "LocalAudioTrack", "TrackPublishOptions", "RoomOptions",
+        )})
+        tracks = []
+        received = []
+
+        class STT:
+            async def transcribe(self, pcm_data):
+                received.append(pcm_data)
+                return "Neuer Anrufabschnitt"
+
+        class Stream:
+            def __init__(self, track):
+                self.track = track
+            async def aclose(self):
+                pass
+            async def _frames(self):
+                # An interrupted old microphone stream has a partial turn
+                # and must never contaminate the new subscription.
+                length = 6 if self.track.name == "old" else 12
+                for _ in range(length):
+                    yield SimpleNamespace(frame=SimpleNamespace(
+                        data=memoryview(pcm(1200)), sample_rate=16000,
+                        num_channels=1,
+                    ))
+                if self.track.name != "old":
+                    for _ in range(35):
+                        yield SimpleNamespace(frame=SimpleNamespace(
+                            data=memoryview(pcm(0)), sample_rate=16000,
+                            num_channels=1,
+                        ))
+                await asyncio.Event().wait()
+            def __aiter__(self):
+                return self._frames()
+
+        class AudioStream:
+            @staticmethod
+            def from_track(track, **kwargs):
+                tracks.append(track.name)
+                return Stream(track)
+
+        rtc.AudioStream = AudioStream
+
+        class ReconnectingRoom(FakeRTC.Room):
+            async def connect(self, url, token, options):
+                assert url == "ws://127.0.0.1:7880"
+                identity = LiveKitAgentCall.participant_identity(
+                    "d" * 32, "tenantA", "human1",
+                )
+                participant = SimpleNamespace(identity=identity)
+                old = SimpleNamespace(kind=1, name="old")
+                new = SimpleNamespace(kind=1, name="new")
+                self.events["track_subscribed"](old, SimpleNamespace(), participant)
+                await asyncio.sleep(0.02)
+                self.events["track_unsubscribed"](old, SimpleNamespace(), participant)
+                self.events["track_subscribed"](new, SimpleNamespace(), participant)
+                # Same publication may be emitted twice by the SDK: only
+                # one audio stream must consume it.
+                self.events["track_subscribed"](new, SimpleNamespace(), participant)
+
+        rooms = []
+        def room_factory():
+            room = ReconnectingRoom()
+            rooms.append(room)
+            return room
+        rtc.Room = room_factory
+        worker = LiveKitAgentCall(
+            client=FakeControl(), tenant="tenantA", callee="human1",
+            tts=FakeTTS(), stt=STT(), llm=FakeLLM(), rtc=rtc,
+        )
+        await asyncio.wait_for(worker.speak("d" * 32), timeout=3)
+        self.assertEqual(tracks, ["old", "new"])
+        self.assertEqual(worker._engine.turn_errors, 0)
+        self.assertEqual(worker._engine.turns_completed, 1)
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0], pcm(1200) * 12)
+        self.assertEqual(rooms[0].disconnect_count, 1)
+
     async def test_only_expected_remote_identity_is_subscribed(self):
         rtc = SimpleNamespace(**{k: getattr(FakeRTC, k) for k in (
             "TrackKind", "TrackSource", "AudioFrame", "AudioSource",
