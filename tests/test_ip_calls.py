@@ -98,6 +98,46 @@ class InternetCallsTest(unittest.TestCase):
         with self.assertRaisesRegex(CallError, "invalid_dnd_preference"):
             self.store.set_do_not_disturb("tenant_a", "bob", 1)
 
+    def test_revoking_agent_opt_in_cancels_existing_unanswered_invitation(self):
+        ringing = self._ring(self.agent)
+        self.assertEqual(self.store.status(self.agent, ringing["id"])["state"], "RINGING")
+        changed = self.store.update_preferences(
+            self.bob, {"allow_agent_calls": False},
+        )
+        self.assertFalse(changed["allow_agent_calls"])
+        self.assertEqual(self.store.status(self.agent, ringing["id"])["state"], "DECLINED")
+        self.assertEqual(self.store.status(self.bob, ringing["id"])["state"], "DECLINED")
+        self.assertEqual(
+            self.store.inbox(self.agent)["events"][-1]["kind"], "DECLINED",
+        )
+        with self.assertRaisesRegex(CallError, "invalid_call_transition"):
+            self.store.decide(self.bob, ringing["id"], "accept")
+        # Revoking AI consent does not block a new human-originated call.
+        human = self._ring(self.alice, idem="human-after-agent-optout-01")
+        self.assertEqual(human["state"], "RINGING")
+        self.store.decide(self.bob, human["id"], "decline")
+        with self.assertRaisesRegex(CallError, "agent_call_not_opted_in"):
+            self._ring(self.agent, idem="agent-after-optout-01")
+
+    def test_do_not_disturb_cancels_existing_ring_and_not_active_calls(self):
+        ringing = self._ring(self.alice)
+        self.store.update_preferences(self.bob, {"do_not_disturb": True})
+        self.assertEqual(self.store.status(self.bob, ringing["id"])["state"], "DECLINED")
+        self.assertEqual(self.store.inbox(self.alice)["events"][-1]["kind"], "DECLINED")
+        self.store.update_preferences(self.bob, {"do_not_disturb": False})
+        active = self._ring(self.alice, idem="human-again-on-dnd-02")
+        self.store.decide(self.bob, active["id"], "accept")
+        self.store.set_do_not_disturb("tenant_a", "bob", True)
+        # Enabling DND does not tear down an already connected conversation.
+        self.assertEqual(self.store.status(self.alice, active["id"])["state"], "ACTIVE")
+        self.store.decide(self.alice, active["id"], "hangup")
+
+    def test_trusted_operator_consent_revocation_cancels_pending_agent_call(self):
+        ringing = self._ring(self.agent)
+        self.store.provision("tenant_a", "bob", allow_agent_calls=False)
+        self.assertEqual(self.store.status(self.bob, ringing["id"])["state"], "DECLINED")
+        self.assertFalse(self.store.preferences(self.bob)["allow_agent_calls"])
+
     def test_ai_call_cooldown_persists_and_applies_across_other_agents(self):
         first = self._ring(self.agent)
         self.store.decide(self.bob, first["id"], "decline")
