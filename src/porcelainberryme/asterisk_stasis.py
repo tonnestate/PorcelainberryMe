@@ -171,7 +171,6 @@ class AsteriskStasisListener:
                         async with session.ws_connect(
                             url, params={"app": self.route.app},
                             auth=auth, heartbeat=20, max_msg_size=65536,
-                            timeout=aiohttp.ClientWSTimeout(ws_close=5),
                         ) as ws:
                             while not stop.is_set():
                                 try:
