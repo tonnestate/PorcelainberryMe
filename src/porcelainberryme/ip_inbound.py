@@ -110,9 +110,9 @@ class InboundAgentMixin:
                 lease = secrets.token_hex(16)
                 if call["state"] == "RINGING":
                     db.execute(
-                        "UPDATE ip_calls SET state='ACTIVE',expires_at=?,closed_at=NULL "
-                        "WHERE id=?",
-                        (now + MAX_CALL_SECONDS, call_id),
+                        "UPDATE ip_calls SET state='ACTIVE',expires_at=?,"
+                        "closed_at=NULL,accepted_at=? WHERE id=?",
+                        (now + MAX_CALL_SECONDS, now, call_id),
                     )
                     self._event(db, call, call["caller"], "ACTIVE", now)
                     self._event(db, call, call["callee"], "ACTIVE", now)
