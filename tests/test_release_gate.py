@@ -99,6 +99,44 @@ class ReleaseGateTests(unittest.TestCase):
             env=baseline, require_mobile_push=False,
         )["configuration_passed"])
 
+    def test_actual_signed_whoami_handshake_is_verified_not_just_health(self):
+        from porcelainberryme.ip_calls import verify_identity_token
+        from porcelainberryme.release_gate import _authenticated_agent_control
+        import json
+
+        class SignedMockConnection:
+            status = 200
+            def __init__(self, host, port, timeout):
+                self.asserted_host = (host, port)
+                self.token = None
+
+            def request(self, method, path, headers):
+                self.token = headers["Authorization"].removeprefix("Bearer ")
+                assert (method, path) == ("GET", "/v1/ip-calls/whoami")
+                assert self.asserted_host == ("127.0.0.1", 8874)
+
+            def getresponse(self):
+                claims = verify_identity_token(
+                    self.token, self_secret,
+                )
+                return type("Response", (), {
+                    "status": self.status,
+                    "read": lambda unused, size: json.dumps({
+                        "tenant": claims["tenant"], "subject": claims["sub"],
+                        "role": claims["role"],
+                    }).encode("utf-8"),
+                })()
+
+            def close(self):
+                pass
+
+        self_secret = self.env["PB_CALL_IDENTITY_SECRET"]
+        with patch("porcelainberryme.release_gate.http.client.HTTPConnection",
+                   SignedMockConnection):
+            self.assertTrue(_authenticated_agent_control(self.env))
+            invalid = dict(self.env, PB_AGENT="not an identity")
+            self.assertFalse(_authenticated_agent_control(invalid))
+
     def test_mobile_and_pstn_require_independent_acceptance(self):
         report = evaluate(env=self.env, network=False,
                           require_mobile_push=True, require_pstn=True)
