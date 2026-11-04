@@ -1,11 +1,15 @@
 """PII-free bounded voice stage metrics from the real 20ms PCM turn engine."""
 from __future__ import annotations
 import asyncio
+from contextlib import redirect_stderr
+from io import StringIO
 import json
+import os
 import struct
 import unittest
+from unittest.mock import patch
 
-from porcelainberryme.local_voice import AudioPacket, VoiceTurnEngine
+from porcelainberryme.local_voice import AudioPacket, VoiceTurnEngine, emit_voice_metrics
 
 
 FRAME = struct.pack("<320h", *([1200] * 320))
@@ -79,6 +83,36 @@ class MetricsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["turns_completed"], 0)
         self.assertEqual(report["first_media_ack_latency"]["samples"], 0)
         self.assertEqual(report["stt_latency"]["samples"], 1)
+        await engine.close()
+
+    async def test_opt_in_journal_event_has_no_contact_or_transcript(self):
+        engine = VoiceTurnEngine(STT(), LLM(), TTS(), Speaker())
+        await submit(engine)
+        report = engine.metrics_snapshot()
+        report["peer"] = "PRIVATE_CONTACT_SHOULD_NEVER_LEAVE"
+        out = StringIO()
+        with patch.dict(os.environ, {"PB_VOICE_METRICS_LOG": "1"}):
+            with redirect_stderr(out):
+                self.assertTrue(emit_voice_metrics(
+                    report, transport="livekit",
+                ))
+        result = json.loads(out.getvalue())
+        self.assertEqual(result["transport"], "livekit")
+        self.assertEqual(result["event"], "porcelainberryme.voice_metrics.v1")
+        self.assertEqual(result["data"]["turns_completed"], 1)
+        self.assertNotIn("PRIVATE_CONTACT", out.getvalue())
+        self.assertNotIn("Kundennummer", out.getvalue())
+        self.assertNotIn("Vertrauliche", out.getvalue())
+        out = StringIO()
+        with patch.dict(os.environ, {"PB_VOICE_METRICS_LOG": "0"}):
+            with redirect_stderr(out):
+                self.assertFalse(emit_voice_metrics(
+                    report, transport="asterisk",
+                ))
+        self.assertEqual(out.getvalue(), "")
+        with patch.dict(os.environ, {"PB_VOICE_METRICS_LOG": "1"}):
+            with self.assertRaises(ValueError):
+                emit_voice_metrics(report, transport="untrusted-cloud")
         await engine.close()
 
     async def test_first_media_time_does_not_claim_human_heard_speech(self):
