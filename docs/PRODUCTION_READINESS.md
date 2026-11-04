@@ -69,6 +69,34 @@ absichtlich **false**, bis reale Host-/Sprach-/Telefonieabnahmen und
 ein fachlicher Freigabeprozess außerhalb dieses Source-Audits
 nachgewiesen sind.
 
+## Sprachlatenz und Betriebstelemetrie
+
+Der vorhandene VoiceTurnEngine sammelt je Gespräch ausschließlich
+begrenzte, numerische Laufzeitstichproben (maximal 64 pro Kategorie):
+
+- Zeit für lokale STT-Verarbeitung eines erkannten Gesprächsabschnitts.
+- Zeit vom abgeschlossenen gesprochenen Input bis zur ersten vom
+  Medienadapter bestätigten Audioausgabe. Dies ist **keine** Garantie,
+  dass ein Mensch diese Ausgabe tatsächlich gehört hat.
+- Zeit bis zum Ende eines vollständig ausgelieferten Antwortturns.
+- Anzahl erfolgreich abgeschlossener Turns, verarbeiteter Fehler und
+  Signale einer Eingabeunterbrechung.
+
+Zu jeder Verteilung werden p50, p95 und Maximum in Millisekunden gebildet.
+Der Snapshot enthält keine Namen, Telefonnummern, Call-IDs, Originaltexte,
+Medieninhalte oder Modell-Prompts. Standardmäßig werden solche Messungen
+**nicht** geloggt. Für eine kontrollierte Abnahme kann der Host
+`PB_VOICE_METRICS_LOG=1` setzen: LiveKit- und Asterisk-Worker
+schreiben dann genau ein strukturiertes, bereinigtes JSON-Ereignis pro
+geschlossener Sprachsitzung in den bestehenden Fehlerausgabestrom bzw.
+das Systemjournal. Es wird kein Telemetrie-SaaS angebunden.
+
+Die Akzeptanzschwellen (deutsche Verständlichkeit, zulässige
+p95-Antwortzeit, CPU/RAM, Überlast und Abbrüche) müssen durch einen
+realen Referenztest auf der vorhandenen Hardware mit dem vorgesehenen
+Sprachmodell festgelegt und nachgewiesen werden. CI-Fake-Modelle
+reichen dafür nicht aus.
+
 ## Verbindliche Abnahmekriterien
 
 | Gate | Nachweis | Derzeit |
