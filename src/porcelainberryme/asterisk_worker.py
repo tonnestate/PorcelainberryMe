@@ -78,6 +78,7 @@ async def serve_asterisk_media(*, channel_id: str, connection_id: str,
                 url, auth=auth, heartbeat=20, max_msg_size=65500) as ws:
             bridge = AsteriskVoiceMedia(
                 ws, expected_channel_id=channel_id,
+                expected_connection_id=connection_id,
                 stt=stt, llm=llm, tts=tts,
             )
             await bridge.run()
