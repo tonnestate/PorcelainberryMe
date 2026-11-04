@@ -26,14 +26,39 @@ ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 REQUEST = re.compile(r"^[A-Za-z0-9_.:-]{8,128}$")
 LOCAL = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$")
 CLOCK = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+VOICE_TIME = (
+    r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?"
+    r"\s*(?:uhr(?:\s*(?P<minute_after>\d{2}))?)?\b"
+)
 SPOKEN_DE = re.compile(
     r"\b(?P<day>\d{1,2})\.(?P<month>\d{1,2})\.(?P<year>\d{4})"
-    r"\s*(?:um\s*)?(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?"
-    r"\s*(?:uhr)?\b", re.IGNORECASE,
+    r"\s*(?:um\s*)?" + VOICE_TIME,
+    re.IGNORECASE,
+)
+GERMAN_MONTHS = {
+    "januar": 1, "februar": 2, "märz": 3, "maerz": 3,
+    "april": 4, "mai": 5, "juni": 6, "juli": 7,
+    "august": 8, "september": 9, "oktober": 10,
+    "november": 11, "dezember": 12,
+}
+SPOKEN_NAMED_MONTH = re.compile(
+    r"\b(?P<day>\d{1,2})\.?\s+"
+    r"(?P<monthname>januar|februar|märz|maerz|april|mai|juni|juli|august|"
+    r"september|oktober|november|dezember)\s+"
+    r"(?P<year>\d{4})\s*(?:um\s*)?" + VOICE_TIME,
+    re.IGNORECASE,
 )
 SPOKEN_ISO = re.compile(
     r"\b(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})"
     r"[ t](?P<hour>\d{2}):(?P<minute>\d{2})\b",
+    re.IGNORECASE,
+)
+MULTIPLE_TIME = re.compile(
+    r"\b\d{1,2}\s*uhr\b|\b\d{1,2}:\d{2}\b",
+    re.IGNORECASE,
+)
+CORRECTED_TIME = re.compile(
+    r"\b(?:nicht|sondern|statt|oder|zwischen|alternativ|entweder)\b",
     re.IGNORECASE,
 )
 CONFIRM = {
@@ -392,20 +417,46 @@ class AppointmentStore:
 
 
 def _spoken_slot(text: str) -> str | None:
+    """Strict German date/time parsing; never silently ignore corrections.
+
+    Numeric and named German month forms require the calendar year. Unknown,
+    ambiguous, corrected or competing times are refused instead of guessed.
+    """
     if not isinstance(text, str) or len(text) > 1200:
         return None
-    matches = list(SPOKEN_DE.finditer(text)) + list(SPOKEN_ISO.finditer(text))
+    if CORRECTED_TIME.search(text):
+        return None
+    matches = (
+        list(SPOKEN_DE.finditer(text))
+        + list(SPOKEN_NAMED_MONTH.finditer(text))
+        + list(SPOKEN_ISO.finditer(text))
+    )
     if len(matches) != 1:
         return None
     match = matches[0]
+    # Reject a second time outside the matched date/time phrase, e.g.
+    # "am 9.11.2026 um 14 Uhr, besser 15 Uhr".
+    remaining = text[:match.start()] + " " + text[match.end():]
+    if MULTIPLE_TIME.search(remaining):
+        return None
+    # "14 Uhr 3" is an incomplete minute expression. Without this guard
+    # the partial regex would silently reinterpret it as 14:00.
+    if re.match(r"\s*\d{1,2}\b", text[match.end():]):
+        return None
+    groups = match.groupdict()
+    if groups.get("minute") is not None and groups.get("minute_after") is not None:
+        return None
     try:
-        minute = int(match.groupdict().get("minute") or "0")
-        day, month, year, hour = (
-            int(match.group(key)) for key in ("day", "month", "year", "hour")
+        minute = int(groups.get("minute_after") or groups.get("minute") or "0")
+        day = int(groups["day"])
+        month = (
+            GERMAN_MONTHS[groups["monthname"].casefold()]
+            if groups.get("monthname") else int(groups["month"])
         )
+        year, hour = int(groups["year"]), int(groups["hour"])
         parsed = datetime(year, month, day, hour, minute)
         return parsed.strftime("%Y-%m-%dT%H:%M")
-    except ValueError:
+    except (ValueError, KeyError):
         return None
 
 
@@ -471,6 +522,16 @@ class AppointmentVoiceResponder:
                 f"Der Termin am {local:%d.%m.%Y} um {local:%H:%M} Uhr ist "
                 "verbindlich in unserem Kalender gebucht."
             )
+        if normalized in {"ja", "ja bitte", "ok", "okay", "einverstanden"}:
+            if self._pending is not None:
+                return "Bitte bestätigen Sie ausdrücklich mit: Ja, Termin buchen."
+            if self._cancel_pending is not None:
+                return "Bitte bestätigen Sie ausdrücklich mit: Ja, Termin stornieren."
+        # Any unrelated statement, time correction or new task invalidates
+        # the former unconfirmed action. A later "Ja, Termin buchen" must
+        # never commit a slot that the caller has already corrected.
+        self._pending = None
+        self._cancel_pending = None
         intent = any(word in normalized.split() for word in (
             "termin", "terminbuchung", "buchen", "buchung",
             "reservieren", "frei", "verfügbar",
@@ -524,11 +585,6 @@ class AppointmentVoiceResponder:
                 "Bitte nennen Sie ein eindeutiges Datum mit Uhrzeit, "
                 "zum Beispiel: Termin am 09.11.2026 um 14 Uhr."
             )
-        if normalized in {"ja", "ja bitte", "ok", "okay", "einverstanden"}:
-            if self._pending is not None:
-                return "Bitte bestätigen Sie ausdrücklich mit: Ja, Termin buchen."
-            if self._cancel_pending is not None:
-                return "Bitte bestätigen Sie ausdrücklich mit: Ja, Termin stornieren."
         return await self.fallback.respond(text, history)
 
 

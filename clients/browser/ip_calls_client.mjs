@@ -56,6 +56,8 @@ export class IPCallClient {
     this.callId = null;
     this.running = false;
     this.timer = null;
+    this._pollInFlight = null;
+    this._didInitialSync = false;
   }
 
   async request(method, endpoint, data) {
@@ -133,6 +135,44 @@ export class IPCallClient {
     );
     await subscription.unsubscribe();
     return result;
+  }
+
+  /**
+   * Retrieve or change only this authenticated human's own consent/DND.
+   * No tenant, recipient, account or user ID may be supplied.
+   */
+  async preferences() {
+    return this.request('GET', '/v1/ip-calls/preferences');
+  }
+
+  async updatePreferences(changes) {
+    if (!changes || typeof changes !== 'object'
+        || Array.isArray(changes) || Object.keys(changes).length === 0
+        || Object.keys(changes).some(key => !['allow_agent_calls', 'do_not_disturb'].includes(key))
+        || Object.values(changes).some(value => typeof value !== 'boolean')) {
+      throw new Error('invalid_call_preferences');
+    }
+    return this.request('POST', '/v1/ip-calls/preferences', changes);
+  }
+
+  /**
+   * A browser may have been asleep while events were pruned. Recover the
+   * current live calls with a server-authoritative scoped snapshot.
+   * A missing connected call means the server has ended it.
+   */
+  async syncActiveCalls() {
+    const snapshot = await this.request('GET', '/v1/ip-calls/active');
+    if (!Array.isArray(snapshot?.calls)) {
+      throw new Error('invalid_call_snapshot');
+    }
+    const known = new Set(snapshot.calls.map(call => call.id));
+    if (this.callId && !known.has(this.callId)) {
+      await this.disconnect();
+    }
+    for (const call of snapshot.calls) {
+      await this.onCallEvent({ kind: 'ACTIVE_SNAPSHOT', call });
+    }
+    return snapshot;
   }
 
   async dial(to, idempotencyKey) {
@@ -226,18 +266,34 @@ export class IPCallClient {
   }
 
   async pollOnce() {
-    const data = await this.request(
-      'GET', '/v1/ip-calls/events?after=' + this.cursor
-    );
-    for (const event of data.events || []) {
-      if (event.cursor > this.cursor) this.cursor = event.cursor;
-      if (event.call?.id === this.callId
-          && ['ENDED', 'DECLINED', 'TIMED_OUT'].includes(event.kind)) {
-        await this.disconnect();
+    // Two parallel callers must not race the cursor or emit duplicates.
+    if (this._pollInFlight) return this._pollInFlight;
+    this._pollInFlight = (async () => {
+      const data = await this.request(
+        'GET', '/v1/ip-calls/events?after=' + this.cursor
+      );
+      if (!Array.isArray(data?.events)) throw new Error('invalid_call_events');
+      for (const event of data.events) {
+        if (!Number.isSafeInteger(event.cursor) || event.cursor <= 0) {
+          throw new Error('invalid_call_cursor');
+        }
+        if (event.cursor <= this.cursor) continue;
+        if (event.call?.id === this.callId
+            && ['ENDED', 'DECLINED', 'TIMED_OUT'].includes(event.kind)) {
+          await this.disconnect();
+        }
+        // Ack only after the host application actually handles this event.
+        // Otherwise a thrown callback silently loses the incoming call.
+        await this.onCallEvent(event);
+        this.cursor = event.cursor;
       }
-      await this.onCallEvent(event);
+      return data;
+    })();
+    try {
+      return await this._pollInFlight;
+    } finally {
+      this._pollInFlight = null;
     }
-    return data;
   }
 
   startPolling(intervalMs = 1200) {
@@ -249,6 +305,10 @@ export class IPCallClient {
     const tick = async () => {
       if (!this.running) return;
       try {
+        if (!this._didInitialSync) {
+          await this.syncActiveCalls();
+          this._didInitialSync = true;
+        }
         await this.pollOnce();
       } catch (error) {
         await this.onCallEvent({ kind: 'POLL_ERROR', error: String(error.message) });
@@ -261,6 +321,7 @@ export class IPCallClient {
 
   stopPolling() {
     this.running = false;
+    this._didInitialSync = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }

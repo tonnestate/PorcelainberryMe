@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 from porcelainberryme.appointments import (
-    AppointmentError, AppointmentStore, AppointmentVoiceResponder,
+    AppointmentError, AppointmentStore, AppointmentVoiceResponder, _spoken_slot,
 )
 
 
@@ -277,6 +277,80 @@ class VoiceBookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("eindeutiges Datum", reply)
         self.assertEqual(self.store.bookings(
             "client", "assistant", "person1"), [])
+
+    async def test_named_german_month_and_14_uhr_30_are_correct_minutes(self):
+        self.assertEqual(
+            _spoken_slot("Termin am 9. November 2026 um 14 Uhr 30"),
+            "2026-11-09T14:30",
+        )
+        self.assertEqual(
+            _spoken_slot("Termin am 09.11.2026 um 14:30 Uhr"),
+            "2026-11-09T14:30",
+        )
+        self.assertEqual(
+            _spoken_slot("Termin 2026-11-09 14:30"),
+            "2026-11-09T14:30",
+        )
+        self.assertEqual(
+            _spoken_slot("Termin am 9 März 2027 um 9 Uhr"),
+            "2027-03-09T09:00",
+        )
+        phrase = await self.voice.respond(
+            "Bitte einen Termin am 9. November 2026 um 14 Uhr 30 buchen", [],
+        )
+        self.assertIn("14:30 Uhr", phrase)
+        booked = await self.voice.respond("Ja Termin buchen", [])
+        self.assertIn("14:30 Uhr", booked)
+        self.assertEqual(self.store.bookings(
+            "client", "assistant", "person1")[0]["local_start"],
+            "2026-11-09T14:30",
+        )
+
+    async def test_ambiguous_or_corrected_time_does_not_create_any_booking(self):
+        unsafe = [
+            "Termin am 09.11.2026 um 14 Uhr oder 15 Uhr",
+            "Termin am 9. November 2026 um 14 Uhr, nicht 15 Uhr",
+            "Termin am 09.11.2026 um 14:30 Uhr 45",
+            "Termin am 09.11.2026 um 14 Uhr, besser 15 Uhr",
+            "Termin am 09.11.2026 um 14 Uhr und 16 Uhr",
+            "Termin am 09.11.2026 um 14:30 statt um 14:00 Uhr",
+            "Termin am 09.11.2026 um 14 Uhr 3",
+        ]
+        for spoken in unsafe:
+            with self.subTest(spoken=spoken):
+                self.assertIsNone(_spoken_slot(spoken))
+                response = await self.voice.respond(spoken, [])
+                self.assertIn("eindeutiges Datum", response)
+                self.assertIn("zuerst", await self.voice.respond(
+                    "Ja, Termin buchen", [],
+                ))
+        self.assertEqual(self.store.bookings(
+            "client", "assistant", "person1"), [])
+
+    async def test_changing_topic_invalidates_previous_unconfirmed_slot(self):
+        await self.voice.respond("Termin am 09.11.2026 um 14 Uhr", [])
+        # Subsequent correction is not a confirmation and must clear the
+        # previous proposal even when the new time lacks a complete date.
+        await self.voice.respond("Nein, ich meinte 15 Uhr", [])
+        denied = await self.voice.respond("Ja, Termin buchen", [])
+        self.assertIn("zuerst", denied)
+        self.assertEqual(self.store.bookings(
+            "client", "assistant", "person1"), [])
+
+    async def test_a_cancellation_proposal_is_invalidated_by_other_speech(self):
+        booked = self.store.book(
+            "client", "assistant", "person1",
+            "2026-11-09T14:00", idempotency_key="stale-cancel-0001",
+        )
+        offered = await self.voice.respond(
+            "Termin am 09.11.2026 um 14 Uhr stornieren", [],
+        )
+        self.assertIn("Ja, Termin stornieren", offered)
+        await self.voice.respond("Ich wollte doch noch etwas anderes fragen", [])
+        declined = await self.voice.respond("Ja, Termin stornieren", [])
+        self.assertIn("zuerst", declined)
+        self.assertEqual(self.store.bookings(
+            "client", "assistant", "person1")[0]["status"], "BOOKED")
 
     async def test_collision_between_proposal_and_confirmation(self):
         await self.voice.respond("Termin am 09.11.2026 um 16 Uhr", [])

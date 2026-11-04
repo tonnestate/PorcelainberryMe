@@ -58,6 +58,30 @@ def _identity(value: str) -> str:
     return value
 
 
+def validate_livekit_url(value: str) -> str:
+    """Require TLS for any non-local RTC endpoint and reject URL credentials.
+
+    Media room JWTs are sensitive bearer credentials. A misconfigured
+    remote ws:// server must never receive them over cleartext transport.
+    """
+    if not isinstance(value, str) or any(c.isspace() for c in value):
+        raise ValueError("invalid_media_url")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("invalid_media_url") from exc
+    if (parsed.scheme not in ("ws", "wss")
+            or not parsed.hostname or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or parsed.path not in ("", "/")
+            or port == 0):
+        raise ValueError("invalid_media_url")
+    if (parsed.scheme == "ws"
+            and parsed.hostname.lower() not in ("localhost", "127.0.0.1", "::1")):
+        raise ValueError("unencrypted_remote_media_url")
+    return value
+
+
 def _b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
 
@@ -140,8 +164,7 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                 raise ValueError("media_key_required")
             if not isinstance(media_secret, str) or len(media_secret) < 32:
                 raise ValueError("media_secret_too_short")
-            if not isinstance(media_url, str) or not media_url.startswith(("ws://", "wss://")):
-                raise ValueError("invalid_media_url")
+            validate_livekit_url(media_url)
             if identity_secret == media_secret:
                 raise ValueError("separate_signing_keys_required")
         self.path = path
@@ -230,6 +253,13 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                     "ON CONFLICT(tenant,subject) DO UPDATE SET agent_calls=excluded.agent_calls",
                     (tenant, subject, int(allow_agent_calls)),
                 )
+                if not allow_agent_calls:
+                    # A trusted operator can revoke an existing opt-in.
+                    # Revoke unanswered agent invitations in the same commit.
+                    self._revoke_pending_contact(
+                        con, tenant, subject, now=self._now(),
+                        block_all=False, block_agents=True,
+                    )
 
     def set_do_not_disturb(self, tenant: str, subject: str, enabled: bool) -> None:
         """Trusted enrollment interface. No unauthenticated HTTP mutation."""
@@ -246,6 +276,106 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                 )
                 if updated.rowcount != 1:
                     raise CallError("account_not_enrolled", 404)
+                if enabled:
+                    self._revoke_pending_contact(
+                        con, tenant, subject, now=self._now(),
+                        block_all=True, block_agents=True,
+                    )
+
+    def _revoke_pending_contact(self, con, tenant, subject, *,
+                                now, block_all, block_agents):
+        """Atomically rescind still-ringing calls and optional staff offers.
+
+        New consent preferences must take effect for INVITATIONS already
+        issued, not just future originates. Active/connected conversations
+        are deliberately not torn down by a preference update.
+        """
+        if not block_all and not block_agents:
+            return
+        pending = con.execute(
+            "SELECT * FROM ip_calls WHERE tenant=? AND callee=? "
+            "AND state='RINGING' AND (?=1 OR agent=1)",
+            (tenant, subject, int(block_all)),
+        ).fetchall()
+        for call in pending:
+            con.execute(
+                "UPDATE ip_calls SET state='DECLINED', expires_at=?, "
+                "closed_at=? WHERE id=? AND state='RINGING'",
+                (now, now, call["id"]),
+            )
+            for actor in (call["caller"], call["callee"]):
+                self._event(con, call, actor, "DECLINED", now)
+
+        if block_all:
+            offers = con.execute(
+                "SELECT c.*,h.target AS handoff_target "
+                "FROM ip_call_handoffs h JOIN ip_calls c ON c.id=h.call_id "
+                "WHERE h.tenant=? AND h.target=? AND c.state='ACTIVE' "
+                "AND h.state IN ('OFFERED','ACCEPTED')",
+                (tenant, subject),
+            ).fetchall()
+            for call in offers:
+                con.execute(
+                    "UPDATE ip_call_handoffs SET state='CANCELLED', "
+                    "expires_at=? WHERE call_id=? "
+                    "AND state IN ('OFFERED','ACCEPTED')",
+                    (now, call["id"]),
+                )
+                # If staff already obtained a media JWT, revoke their
+                # participant repeatedly until the last token expires.
+                self._schedule_handoff_kick(con, call["id"], now)
+                for actor in {call["caller"], call["callee"], subject}:
+                    self._event(con, call, actor, "HANDOFF_CANCELLED", now)
+
+    def preferences(self, claims: dict) -> dict:
+        """Read only the authenticated account's own consent and DND."""
+        with closing(self._conn()) as con:
+            row = con.execute(
+                "SELECT agent_calls,do_not_disturb FROM ip_call_users "
+                "WHERE tenant=? AND subject=?",
+                (claims["tenant"], claims["sub"]),
+            ).fetchone()
+            if row is None:
+                raise CallError("account_not_enrolled", 403)
+            return {
+                "allow_agent_calls": bool(row["agent_calls"]),
+                "do_not_disturb": bool(row["do_not_disturb"]),
+            }
+
+    def update_preferences(self, claims: dict, changes: dict) -> dict:
+        """Allow only a real human identity to control its own opt-in state.
+
+        Neither the agent nor a request parameter can select another account.
+        All requested changes are committed atomically.
+        """
+        if claims["role"] != "human":
+            raise CallError("only_human_can_change_call_preferences", 403)
+        if (not isinstance(changes, dict) or not changes
+                or set(changes) - {"allow_agent_calls", "do_not_disturb"}
+                or any(type(value) is not bool for value in changes.values())):
+            raise CallError("invalid_call_preferences")
+        with closing(self._conn()) as con:
+            with con:
+                current = con.execute(
+                    "SELECT agent_calls,do_not_disturb FROM ip_call_users "
+                    "WHERE tenant=? AND subject=?",
+                    (claims["tenant"], claims["sub"]),
+                ).fetchone()
+                if current is None:
+                    raise CallError("account_not_enrolled", 403)
+                consent = changes.get("allow_agent_calls", bool(current["agent_calls"]))
+                dnd = changes.get("do_not_disturb", bool(current["do_not_disturb"]))
+                con.execute(
+                    "UPDATE ip_call_users SET agent_calls=?,do_not_disturb=? "
+                    "WHERE tenant=? AND subject=?",
+                    (int(consent), int(dnd), claims["tenant"], claims["sub"]),
+                )
+                if dnd or not consent:
+                    self._revoke_pending_contact(
+                        con, claims["tenant"], claims["sub"], now=self._now(),
+                        block_all=dnd, block_agents=not consent,
+                    )
+                return {"allow_agent_calls": consent, "do_not_disturb": dnd}
 
     def _now(self):
         return int(self.clock())
@@ -391,6 +521,16 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                     raise CallError("account_not_enrolled", 403)
                 if users[callee]["do_not_disturb"]:
                     raise CallError("recipient_do_not_disturb", 409)
+                # An explicitly disabled AI receptionist must not cause
+                # an unanswered customer ring just because its identity
+                # still exists in the trusted account directory.
+                inbound = con.execute(
+                    "SELECT enabled FROM ip_inbound_agents "
+                    "WHERE tenant=? AND assistant=?",
+                    (tenant, callee),
+                ).fetchone()
+                if inbound is not None and not inbound["enabled"]:
+                    raise CallError("inbound_agent_not_enabled", 409)
                 if claims["role"] == "agent":
                     if not users[callee]["agent_calls"]:
                         raise CallError("agent_call_not_opted_in", 403)
@@ -433,10 +573,45 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                 self._event(con, call, caller, "OUTGOING", now)
                 return self._visible(call, caller)
 
+    def active_calls(self, claims: dict) -> dict:
+        """Authenticated snapshot after reconnect or a suspended PWA wake-up.
+
+        Poll cursors can be lost when events expire; a live-call snapshot
+        prevents an otherwise valid unanswered ring or handoff offer from
+        disappearing behind an old browser cursor. The snapshot is scoped
+        to the caller, recipient, or currently invited/connected employee.
+        """
+        with closing(self._open()) as con:
+            with con:
+                rows = con.execute(
+                    "SELECT c.* FROM ip_calls AS c "
+                    "WHERE c.tenant=? AND c.state IN ('RINGING','ACTIVE') "
+                    "AND (c.caller=? OR c.callee=? OR EXISTS("
+                    "SELECT 1 FROM ip_call_handoffs AS h "
+                    "WHERE h.call_id=c.id AND h.tenant=c.tenant "
+                    "AND h.target=? AND h.state IN ('OFFERED','ACCEPTED','CONNECTED')"
+                    ")) ORDER BY c.created_at DESC, c.id LIMIT 100",
+                    (claims["tenant"], claims["sub"], claims["sub"], claims["sub"]),
+                ).fetchall()
+                return {
+                    "calls": [
+                        self._handoff_with_call(con, call, claims["sub"])
+                        for call in rows
+                    ],
+                    "server_time": self._now(),
+                }
+
     def status(self, claims: dict, call_id: str) -> dict:
         with closing(self._open()) as con:
             with con:
                 call = self._get(con, claims["tenant"], claims["sub"], call_id)
+                if claims["sub"] not in (call["caller"], call["callee"]):
+                    # A cancelled/declined/expired offer does not confer
+                    # ongoing surveillance of the customer's active call.
+                    offer = self._handoff_row(con, call_id)
+                    if (offer is None or offer["target"] != claims["sub"]
+                            or offer["state"] not in ("OFFERED", "ACCEPTED", "CONNECTED")):
+                        raise CallError("call_not_found", 404)
                 return self._handoff_with_call(con, call, claims["sub"])
 
     def inbox(self, claims: dict, after: int = 0) -> dict:
@@ -452,8 +627,24 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                 events = []
                 for row in rows:
                     call = self._get(con, claims["tenant"], claims["sub"], row["call_id"])
+                    if claims["sub"] not in (call["caller"], call["callee"]):
+                        offer = self._handoff_row(con, call["id"])
+                        if (offer is None or offer["target"] != claims["sub"]
+                                or offer["state"] not in ("OFFERED", "ACCEPTED", "CONNECTED")):
+                            # Historical staff notification is still acknowledged
+                            # so polling can advance. Do not disclose the live
+                            # customer's peer/current state after revocation.
+                            visible = {"id": call["id"], "state": "HANDOFF_REVOKED"}
+                        else:
+                            visible = self._handoff_with_call(
+                                con, call, claims["sub"],
+                            )
+                    else:
+                        visible = self._handoff_with_call(
+                            con, call, claims["sub"],
+                        )
                     events.append({"cursor": row["seq"], "kind": row["kind"],
-                                   "call": self._visible(call, claims["sub"])})
+                                   "call": visible})
                 return {"events": events, "next_cursor": rows[-1]["seq"] if rows else after}
 
     def decide(self, claims: dict, call_id: str, decision: str) -> dict:
@@ -671,6 +862,13 @@ def make_handler(registry: CallRegistry):
                         "tenant": claims["tenant"], "subject": claims["sub"],
                         "role": claims["role"],
                     })
+                if uri.path == "/v1/ip-calls/preferences":
+                    if self.command == "GET":
+                        return self._reply(200, registry.preferences(claims))
+                    if self.command == "POST":
+                        return self._reply(200, registry.update_preferences(
+                            claims, self._body(),
+                        ))
                 if self.command == "GET" and uri.path == "/v1/ip-calls/push/config":
                     return self._reply(200, registry.push_config())
                 if uri.path == "/v1/ip-calls/push/subscriptions":
@@ -682,6 +880,8 @@ def make_handler(registry: CallRegistry):
                         return self._reply(200, registry.revoke_push(
                             claims, self._body().get("device_id"),
                         ))
+                if self.command == "GET" and uri.path == "/v1/ip-calls/active":
+                    return self._reply(200, registry.active_calls(claims))
                 if self.command == "GET" and uri.path == "/v1/ip-calls/events":
                     qs = parse_qs(uri.query)
                     after = int(qs.get("after", ["0"])[0])

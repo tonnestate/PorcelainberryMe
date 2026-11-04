@@ -60,6 +60,14 @@ class InboundAgentMixin:
                     "DO UPDATE SET enabled=excluded.enabled",
                     (tenant, assistant, int(enabled)),
                 )
+                if not enabled:
+                    # Withdrawal must cancel already ringing customers too.
+                    # Established active sessions remain under their lease
+                    # and are handled by their normal media lifecycle.
+                    self._revoke_pending_contact(
+                        db, tenant, assistant, now=self._now(),
+                        block_all=True, block_agents=True,
+                    )
 
     def _check_inbound(self, db, claims, call, *, require_enabled=True):
         from .ip_calls import CallError
@@ -165,10 +173,16 @@ class InboundAgentMixin:
                 call = self._get(db, claims["tenant"], claims["sub"], call_id)
                 self._check_inbound(db, claims, call, require_enabled=False)
                 row = db.execute(
-                    "SELECT lease FROM ip_inbound_leases WHERE call_id=?",
+                    "SELECT lease,expires_at FROM ip_inbound_leases WHERE call_id=?",
                     (call_id,),
                 ).fetchone()
                 if not isinstance(lease, str) or row is None or row["lease"] != lease:
+                    raise CallError("inbound_lease_lost", 409)
+                # Even if nobody has claimed the expired lease yet, the
+                # worker is no longer authorized to end an ACTIVE call.
+                # A finished/declined call may still have its old lease
+                # record removed safely, as there is no live media to seize.
+                if call["state"] == "ACTIVE" and row["expires_at"] <= now:
                     raise CallError("inbound_lease_lost", 409)
                 handoff = self._handoff_row(db, call_id)
                 transferred = handoff is not None and handoff["state"] == "CONNECTED"

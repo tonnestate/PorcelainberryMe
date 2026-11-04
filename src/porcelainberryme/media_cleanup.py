@@ -12,7 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
-from .ip_calls import _jwt
+from .ip_calls import _jwt, validate_livekit_url
 
 
 class MediaTeardownError(RuntimeError):
@@ -28,11 +28,11 @@ class LiveKitRoomTerminator:
             raise ValueError("livekit_admin_key_required")
         if not isinstance(api_secret, str) or len(api_secret) < 32:
             raise ValueError("livekit_admin_secret_required")
+        try:
+            validate_livekit_url(media_url)
+        except ValueError as exc:
+            raise ValueError("invalid_livekit_server_url") from exc
         parsed = urlsplit(media_url)
-        if (parsed.scheme not in ("ws", "wss") or not parsed.hostname
-                or parsed.username or parsed.password or parsed.query
-                or parsed.fragment or parsed.path not in ("", "/")):
-            raise ValueError("invalid_livekit_server_url")
         if not isinstance(timeout_seconds, (int, float)) or not 0 < timeout_seconds <= 10:
             raise ValueError("invalid_media_timeout")
         self.endpoint = urlunsplit((

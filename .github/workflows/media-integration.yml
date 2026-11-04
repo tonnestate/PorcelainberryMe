@@ -18,7 +18,17 @@ on:
       - 'src/porcelainberryme/ip_calls.py'
       - 'src/porcelainberryme/media_cleanup.py'
       - 'src/porcelainberryme/voice_livekit_agent.py'
+      - 'src/porcelainberryme/local_voice.py'
+      - 'src/porcelainberryme/appointments.py'
+      - 'src/porcelainberryme/call_notes.py'
+      - 'src/porcelainberryme/agent_knowledge.py'
+      - 'src/porcelainberryme/document_knowledge.py'
       - 'pyproject.toml'
+
+# Only the newest commit of each PR should consume RTC media runner minutes.
+concurrency:
+  group: rtc-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
