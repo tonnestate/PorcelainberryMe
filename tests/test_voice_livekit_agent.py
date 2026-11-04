@@ -379,6 +379,67 @@ class VoiceLiveKitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(received[0], pcm(1200) * 12)
         self.assertEqual(rooms[0].disconnect_count, 1)
 
+    async def test_staff_handoff_ignores_nonmicrophone_media_track(self):
+        rtc = SimpleNamespace(**{k: getattr(FakeRTC, k) for k in (
+            "TrackKind", "TrackSource", "AudioFrame", "AudioSource",
+            "LocalAudioTrack", "TrackPublishOptions", "RoomOptions",
+            "AudioStream",
+        )})
+
+        class HandoffControl(FakeControl):
+            def __init__(self):
+                super().__init__()
+                self.completions = []
+
+            async def status(self, call_id):
+                self.checks += 1
+                return {
+                    "state": "ACTIVE" if self.checks == 1 else "ENDED",
+                    "handoff": {"state": "ACCEPTED", "target": "staff1"},
+                }
+
+            async def change_handoff(self, call_id, action):
+                self.completions.append((call_id, action))
+                return {"state": "CONNECTED"}
+
+        control = HandoffControl()
+        call_id = "f" * 32
+
+        class StaffRoom(FakeRTC.Room):
+            async def connect(self, url, token, options):
+                staff_identity = LiveKitAgentCall.participant_identity(
+                    call_id, "tenantA", "staff1",
+                )
+                staff = SimpleNamespace(identity=staff_identity)
+                track = SimpleNamespace(kind=FakeRTC.TrackKind.KIND_AUDIO)
+                self.events["track_subscribed"](
+                    track, SimpleNamespace(source="screen_audio"), staff,
+                )
+                await asyncio.sleep(0.01)
+                self.assertions_before_mic = list(control.completions)
+                self.events["track_subscribed"](
+                    track, SimpleNamespace(
+                        source=FakeRTC.TrackSource.SOURCE_MICROPHONE,
+                    ), staff,
+                )
+                await asyncio.sleep(0.01)
+
+        rooms = []
+        def create_room():
+            room = StaffRoom()
+            rooms.append(room)
+            return room
+        rtc.Room = create_room
+
+        worker = LiveKitAgentCall(
+            client=control, tenant="tenantA", callee="human1",
+            tts=FakeTTS(), stt=FakeSTT(), llm=FakeLLM(), rtc=rtc,
+        )
+        await asyncio.wait_for(worker.speak(call_id), timeout=3)
+        self.assertEqual(rooms[0].assertions_before_mic, [])
+        self.assertEqual(control.completions, [(call_id, "complete")])
+        self.assertEqual(rooms[0].disconnect_count, 1)
+
     async def test_only_expected_remote_identity_is_subscribed(self):
         rtc = SimpleNamespace(**{k: getattr(FakeRTC, k) for k in (
             "TrackKind", "TrackSource", "AudioFrame", "AudioSource",
