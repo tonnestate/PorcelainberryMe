@@ -12,7 +12,7 @@ import json
 import re
 from uuid import uuid4
 
-from .local_voice import AudioPacket, FRAME_BYTES, VoiceTurnEngine
+from .local_voice import AudioPacket, FRAME_BYTES, VoiceTurnEngine, emit_voice_metrics
 
 _CHANNEL = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _ALLOWED_EVENTS = {
@@ -229,6 +229,13 @@ class AsteriskVoiceMedia:
                 raise AsteriskMediaError("asterisk_no_media_start")
         finally:
             await self.engine.close()
+            try:
+                emit_voice_metrics(
+                    self.engine.metrics_snapshot(), transport="asterisk",
+                )
+            except (ValueError, OSError):
+                # Metrics must not suppress the authoritative media close.
+                pass
             await self.speaker.aclose()
 
 
