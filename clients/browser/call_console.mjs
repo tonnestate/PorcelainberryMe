@@ -212,10 +212,12 @@ export class CallConsoleController {
         await this.client.disconnect();
         this._update({
           phase: 'idle', callId: null, peer: null, kind: null, busy: false,
-          microphoneMuted: false, selfCallApprovalId: null,
+          microphoneMuted: false,
           message: 'Anruf beendet oder nicht mehr verfügbar.',
         });
-        this._persistSelfCall();
+        // A generic call-ended event is not tied to a specific outbound
+        // approval. Only the authenticated approval-status endpoint may
+        // resolve or clear a previous self-call request.
       }
       return;
     }
