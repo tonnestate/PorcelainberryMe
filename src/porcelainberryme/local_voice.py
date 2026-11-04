@@ -770,3 +770,50 @@ class VoiceTurnEngine:
             except asyncio.CancelledError:
                 pass
         self.history.clear()
+
+
+def emit_voice_metrics(report: dict, *, transport: str) -> bool:
+    """Opt-in scrubbed single-line operational timing event, no PII.
+
+    This emits aggregate counts/latencies only. The caller, contact, room,
+    call_id, model text, token and audio are never included. It works with
+    the host's existing stderr/systemd journal; no telemetry vendor.
+    """
+    if os.environ.get("PB_VOICE_METRICS_LOG") != "1":
+        return False
+    if transport not in ("livekit", "asterisk"):
+        raise ValueError("voice_metrics_transport_not_allowed")
+    if not isinstance(report, dict) or (
+            report.get("schema") != "porcelainberryme.voice-metrics.v1"):
+        raise ValueError("voice_metrics_schema_invalid")
+    counters = ("turns_completed", "turn_errors", "input_interrupt_signals")
+    summary = {}
+    for key in counters:
+        value = report.get(key)
+        if type(value) is not int or not 0 <= value <= 1000000:
+            raise ValueError("voice_metrics_counter_invalid")
+        summary[key] = value
+    for key in ("stt_latency", "first_media_ack_latency",
+                "complete_turn_latency"):
+        item = report.get(key)
+        if not isinstance(item, dict):
+            raise ValueError("voice_metrics_latency_invalid")
+        samples = item.get("samples")
+        if type(samples) is not int or not 0 <= samples <= 64:
+            raise ValueError("voice_metrics_latency_invalid")
+        values = {"samples": samples}
+        for statistic in ("p50_ms", "p95_ms", "max_ms"):
+            amount = item.get(statistic)
+            if (samples == 0 and amount is not None) or (
+                    samples > 0 and (type(amount) is not int
+                                     or not 0 <= amount <= 3600000)):
+                raise ValueError("voice_metrics_latency_invalid")
+            values[statistic] = amount
+        summary[key] = values
+    import sys
+    sys.stderr.write(json.dumps({
+        "event": "porcelainberryme.voice_metrics.v1",
+        "transport": transport,
+        "data": summary,
+    }, separators=(",", ":"), sort_keys=True) + "\n")
+    return True
