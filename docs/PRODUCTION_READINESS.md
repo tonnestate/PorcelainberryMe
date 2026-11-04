@@ -35,6 +35,43 @@ verändert weder bestehende Geheimnisse noch die Benutzerverwaltung.
    restriktive Filesystem- und Prozessrechte sowie keinen öffentlichen
    HTTP-Listener. Pfade müssen am realen Host bestätigt werden.
 
+## Zusätzliche Korrekturen des Kernprozesses
+
+Die ausgehende Telefonie erkennt jetzt die eindeutige, vom Host
+bestätigte Einwilligungsreferenz als Idempotenznachweis an. Derselbe
+Einwilligungsvorgang kann auch bei 30 parallelen Wiederholungen nicht
+mehrere Anrufberechtigungen erzeugen. Versucht der Host, dieselbe
+Referenz einer anderen Empfänger- oder Agentenidentität desselben
+Mandanten zuzuordnen, wird der Vorgang abgelehnt. Unverarbeitete
+Freigaben sind standardmäßig auf 64 pro Agent und dauerhaft gespeicherte
+Aufträge auf 10.000 pro Agent begrenzt; damit kann eine fehlerhafte
+Host-Integration die Warteschlange nicht unbegrenzt auffüllen.
+
+Der Browser-Client erzwingt für externe Call-Control-Server HTTPS,
+untersagt Credentials in URL-Bestandteilen und automatische
+Weiterleitungen, setzt ein anpassbares HTTP-Timeout (1 bis 30 Sekunden)
+und behandelt auch leere 503-Überlastantworten korrekt. Bei unklaren
+POST-Ergebnissen wird die ursprüngliche Anruf-ID erneut verwendet,
+anstatt versehentlich zwei Einladungen zu erzeugen. Die bestehende
+PWA kann die nur für diese Browsersitzung benötigte, nicht geheime
+Anruf-ID in sessionStorage aufbewahren; Identitätstoken und
+Gesprächsinhalte werden dort nicht abgelegt.
+
+Für die Call-Control-Datenbank ist SQLite-WAL mit voller
+Synchronisationssicherheit aktiviert. Das reduziert die Blockierung
+gleichzeitiger Leser und Schreiber; die fachlichen
+Transaktions-/Autorisierungsgrenzen bleiben unverändert. Das
+Reporting gibt seine schreibende Wartungstransaktion vor der eigentlichen
+SQL-Tagesaggregation frei. Vorhandene Call-Control-Datenbankdateien
+mit öffentlichen Gruppen-/Weltberechtigungen oder Symlink-Umleitungen
+werden beim produktiven Serverstart abgelehnt.
+
+Tests prüfen Wiederholung nach Neustart, parallele
+Einwilligungsversuche, Queue-Kapazität, Browser-Netzausfälle,
+HTTP-503-Antworten, WAL-Lesekonkurrenz und Dateiberechtigungen.
+Keiner dieser Quellcode-Tests ersetzt einen echten Anruf mit dem
+verbundenen Smartphone und den installierten Sprachmodellen.
+
 ## Betrieb: Release-Gate auf dem echten Host
 
 Nach Installation in der bestehenden Python-Umgebung und Überprüfung der
