@@ -492,6 +492,7 @@ class VoiceTurnEngine:
         self.stt, self.llm, self.tts, self.speaker = stt, llm, tts, speaker
         self.history: list[dict] = []
         self._epoch = 0
+        self._stream_interrupted = asyncio.Event()
         self._pending: bytes | None = None
         self._worker: asyncio.Task | None = None
         self._closed = False
@@ -506,6 +507,8 @@ class VoiceTurnEngine:
         started, utterance = self.detector.push(pcm)
         if started:
             self._epoch += 1
+            self._stream_interrupted.set()
+            self._stream_interrupted = asyncio.Event()
             self.speaker.interrupt()
         if utterance:
             self._pending = utterance
@@ -522,19 +525,57 @@ class VoiceTurnEngine:
         if self._closed:
             return
         self._epoch += 1
+        self._stream_interrupted.set()
+        self._stream_interrupted = asyncio.Event()
         self._pending = None
         self.detector.reset()
         self.speaker.interrupt()
 
-    async def _speak_response(self, response: str, epoch: int) -> bool:
+    @staticmethod
+    async def _next_or_interrupted(iterator, interrupted: asyncio.Event):
+        """Read one async chunk, or cancel its source on acoustic barge-in.
+
+        An await on local TTS stdout or Ollama's HTTP stream must not hold
+        the old conversation hostage until the next model byte arrives.
+        The caller owns and closes the async generator on interruption.
+        """
+        if interrupted.is_set():
+            return False, None
+        reading = asyncio.ensure_future(anext(iterator))
+        cancellation = asyncio.create_task(interrupted.wait())
+        try:
+            await asyncio.wait(
+                (reading, cancellation), return_when=asyncio.FIRST_COMPLETED,
+            )
+            if interrupted.is_set():
+                reading.cancel()
+                await asyncio.gather(reading, return_exceptions=True)
+                return False, None
+            return True, reading.result()
+        finally:
+            if not reading.done():
+                reading.cancel()
+                await asyncio.gather(reading, return_exceptions=True)
+            cancellation.cancel()
+            await asyncio.gather(cancellation, return_exceptions=True)
+
+    async def _speak_response(
+        self, response: str, epoch: int, interrupted: asyncio.Event,
+    ) -> bool:
         """Keep turn delivery fenced during progressive local speech."""
         stream_audio = getattr(self.tts, "stream_audio", None)
         if (getattr(self.tts, "streaming_enabled", False)
                 and callable(stream_audio)):
             audible = False
             async with aclosing(stream_audio(response)) as packets:
-                async for packet in packets:
-                    if epoch != self._epoch or self._closed:
+                while True:
+                    try:
+                        available, packet = await self._next_or_interrupted(
+                            packets, interrupted,
+                        )
+                    except StopAsyncIteration:
+                        break
+                    if not available or epoch != self._epoch or self._closed:
                         return False
                     if not await self.speaker.play(packet):
                         return False
@@ -551,6 +592,7 @@ class VoiceTurnEngine:
         while self._pending is not None and not self._closed:
             pcm, self._pending = self._pending, None
             epoch = self._epoch
+            interrupted = self._stream_interrupted
             try:
                 utterance = (await self.stt.transcribe(pcm)).strip()
                 if epoch != self._epoch or self._closed or not utterance:
@@ -564,13 +606,21 @@ class VoiceTurnEngine:
                     spoken_parts = []
                     heard = True
                     async with aclosing(stream(utterance, self.history)) as sentences:
-                        async for sentence in sentences:
-                            if epoch != self._epoch or self._closed:
+                        while True:
+                            try:
+                                available, sentence = await self._next_or_interrupted(
+                                    sentences, interrupted,
+                                )
+                            except StopAsyncIteration:
+                                break
+                            if not available or epoch != self._epoch or self._closed:
                                 heard = False
                                 break
                             if not isinstance(sentence, str) or not sentence.strip():
                                 raise LocalVoiceUnavailable("invalid_streamed_sentence")
-                            if not await self._speak_response(sentence.strip(), epoch):
+                            if not await self._speak_response(
+                                sentence.strip(), epoch, interrupted,
+                            ):
                                 heard = False
                                 break
                             if epoch != self._epoch or self._closed:
@@ -582,7 +632,7 @@ class VoiceTurnEngine:
                     response = (await self.llm.respond(utterance, self.history)).strip()
                     if epoch != self._epoch or self._closed or not response:
                         continue
-                    heard = await self._speak_response(response, epoch)
+                    heard = await self._speak_response(response, epoch, interrupted)
                 if heard and response and epoch == self._epoch and not self._closed:
                     # Consent-gated notes depend on turns the other party
                     # could actually hear, not on STT/LLM speculative work.
@@ -615,6 +665,7 @@ class VoiceTurnEngine:
 
     async def close(self):
         self._closed = True
+        self._stream_interrupted.set()
         self.detector.reset()
         self._pending = None
         self.speaker.interrupt()
