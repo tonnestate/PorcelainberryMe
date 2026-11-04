@@ -91,6 +91,13 @@ class HumanHandoffResponder:
             return "Es gibt keine abbrechbare Weiterleitung."
         return await self.responder.respond(text, history)
 
+    def on_turn_delivered(self, utterance: str, response: str) -> None:
+        # Keep delivery-based note consent functional when optional human
+        # transfer wraps the note responder as the outermost assistant tool.
+        forwarded = getattr(self.responder, "on_turn_delivered", None)
+        if forwarded is not None:
+            forwarded(utterance, response)
+
     async def persist_if_consented(self, call_id, history):
         persist = getattr(self.responder, "persist_if_consented", None)
         if persist is None:

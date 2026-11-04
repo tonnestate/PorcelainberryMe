@@ -103,6 +103,63 @@ class CallNoteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Liefertermin", note)
         self.assertNotIn("Frühere Frage", note)
 
+    async def test_long_voice_conversation_keeps_latest_delivered_post_consent_only(self):
+        # History always holds <=12 messages. Consent early in a long
+        # conversation previously meant start_index >= len(history), hence
+        # permanently empty notes despite confirmed approval.
+        consent = "Ich stimme der Speicherung einer Gesprächsnotiz zu."
+        history = record_turns("Privates Gespräch vor der Zustimmung")
+        self.notes.on_turn_delivered("Privates Gespräch vor der Zustimmung", "Verstanden.")
+        await self.notes.respond(consent, history)
+        self.notes.on_turn_delivered(consent, "Einverstanden.")
+        history = (history + record_turns(consent))[-12:]
+        for index in range(1, 11):
+            phrase = f"Reklamation mit Vorgangsnummer {index}"
+            await self.notes.respond(phrase, history)
+            self.notes.on_turn_delivered(phrase, "Verstanden.")
+            history = (history + record_turns(phrase))[-12:]
+        self.assertLessEqual(len(history), 12)
+        self.assertTrue(await self.notes.persist_if_consented("f" * 32, history))
+        saved = self.store.list_notes("firm_a", "agent")[0]
+        self.assertEqual(saved.excerpts, 4)
+        self.assertIn("Vorgangsnummer 10", saved.text)
+        self.assertIn("Vorgangsnummer 7", saved.text)
+        self.assertNotIn("Vorgangsnummer 1 ", saved.text)
+        self.assertNotIn("Privates Gespräch", saved.text)
+
+    async def test_interrupted_consent_response_never_authorizes_storage(self):
+        # Engine delivered an ordinary turn, then the explicit consent
+        # response was generated but interrupted before it could be heard.
+        self.notes.on_turn_delivered("Vorabinformation privat", "Verstanden.")
+        await self.notes.respond(
+            "Ich stimme der Speicherung einer Gesprächsnotiz zu", [],
+        )
+        self.assertTrue(self.notes.consented)  # tentative control state
+        self.assertFalse(await self.notes.persist_if_consented(
+            "e" * 32, record_turns("Vorabinformation privat"),
+        ))
+        self.assertEqual(self.store.list_notes("firm_a", "agent"), [])
+
+    async def test_revocation_clears_delivered_notes_even_after_history_rollover(self):
+        consent = "Ich stimme der Speicherung einer Gesprächsnotiz zu"
+        revoke = "Ich widerrufe die Speicherung der Gesprächsnotiz"
+        await self.notes.respond(consent, [])
+        self.notes.on_turn_delivered(consent, "OK")
+        self.notes.on_turn_delivered("Dies ist eine vertrauliche Rechnungsfrage", "OK")
+        await self.notes.respond(revoke, [])
+        # Revocation immediately destroys the collected utterances,
+        # even if the spoken response has not yet finished.
+        self.assertFalse(await self.notes.persist_if_consented(
+            "c" * 32, record_turns("Dies ist eine vertrauliche Rechnungsfrage"),
+        ))
+        await self.notes.respond(consent, [])
+        self.notes.on_turn_delivered(consent, "OK")
+        self.notes.on_turn_delivered("Neues Anliegen zur Lieferung", "OK")
+        self.assertTrue(await self.notes.persist_if_consented("d" * 32, []))
+        stored = self.store.list_notes("firm_a", "agent")[0]
+        self.assertIn("Lieferung", stored.text)
+        self.assertNotIn("Rechnungsfrage", stored.text)
+
     async def test_tenant_isolation_replay_and_explicit_deletion(self):
         await self.notes.respond("Ich stimme der Speicherung einer Gesprächsnotiz zu", [])
         history = record_turns(

@@ -63,10 +63,17 @@ def validate_subscription(subscription):
         raise CallError("invalid_push_device")
     if not isinstance(endpoint, str) or not 20 <= len(endpoint) <= MAX_PUSH_ENDPOINT:
         raise CallError("invalid_push_endpoint")
-    parsed = urlsplit(endpoint)
-    host = (parsed.hostname or "").lower()
+    # urlsplit(), hostname and port can raise ValueError for malformed
+    # bracketed IPv6 authorities or out-of-range/non-numeric ports.
+    # Registration is untrusted input: map these to a controlled 400.
+    try:
+        parsed = urlsplit(endpoint)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError as exc:
+        raise CallError("invalid_push_endpoint") from exc
     if (parsed.scheme != "https" or parsed.username or parsed.password
-            or parsed.port not in (None, 443) or parsed.fragment or not parsed.path
+            or port not in (None, 443) or parsed.fragment or not parsed.path
             or host not in PUSH_EXACT_HOSTS
             and not any(host.endswith(suffix) for suffix in PUSH_HOST_SUFFIXES)):
         # Avoid SSRF: we only transmit to established browser push-service
@@ -288,8 +295,62 @@ class PushMixin:
                         (now + 30, row["id"]),
                     )
                     jobs.append((row, min(PUSH_OFFER_SECONDS, expires - now)))
-        sent = stale = retry = 0
+        sent = stale = retry = suppressed = 0
         for job, ttl in jobs:
+            # The call may have ended or the user may have changed DND
+            # while another push in this batch was being delivered. Do not
+            # send a stale job merely because it was valid at batch selection.
+            check_time = self._now()
+            with closing(self._conn()) as fresh_db:
+                current = fresh_db.execute(
+                    "SELECT j.done,s.endpoint,u.do_not_disturb,"
+                    "c.state AS call_state,c.callee,c.expires_at AS call_exp,"
+                    "h.state AS handoff_state,h.target AS handoff_target,"
+                    "h.expires_at AS handoff_exp "
+                    "FROM ip_push_jobs AS j "
+                    "LEFT JOIN ip_push_subscriptions AS s "
+                    "ON s.tenant=j.tenant AND s.subject=j.subject "
+                    "AND s.device_id=j.device_id "
+                    "LEFT JOIN ip_call_users AS u "
+                    "ON u.tenant=j.tenant AND u.subject=j.subject "
+                    "LEFT JOIN ip_calls AS c "
+                    "ON c.id=j.call_id AND c.tenant=j.tenant "
+                    "LEFT JOIN ip_call_handoffs AS h ON h.call_id=j.call_id "
+                    "WHERE j.id=?",
+                    (job["id"],),
+                ).fetchone()
+            still_valid = (
+                current is not None and not current["done"]
+                and current["endpoint"] == job["endpoint"]
+                and current["do_not_disturb"] == 0
+                and (
+                    (job["kind"] == "RINGING"
+                     and current["call_state"] == "RINGING"
+                     and current["callee"] == job["subject"]
+                     and current["call_exp"] is not None
+                     and current["call_exp"] > check_time)
+                    or
+                    (job["kind"] == "HANDOFF_OFFERED"
+                     and current["call_state"] == "ACTIVE"
+                     and current["handoff_state"] == "OFFERED"
+                     and current["handoff_target"] == job["subject"]
+                     and current["handoff_exp"] is not None
+                     and current["handoff_exp"] > check_time)
+                )
+            )
+            if not still_valid:
+                with closing(self._conn()) as stale_db:
+                    with stale_db:
+                        stale_db.execute(
+                            "UPDATE ip_push_jobs SET done=1 WHERE id=? AND done=0",
+                            (job["id"],),
+                        )
+                suppressed += 1
+                continue
+            ttl = min(ttl, (
+                current["call_exp"] if job["kind"] == "RINGING"
+                else current["handoff_exp"]
+            ) - check_time)
             # Payload includes ONLY an opaque local call ID and event kind;
             # no customer text, credentials, tenant or caller identity.
             payload = {"type": "incoming_ip_call", "call_id": job["call_id"],
@@ -341,7 +402,8 @@ class PushMixin:
             else:
                 sent += 1
         return {"attempted": len(jobs), "accepted_by_push_service": sent,
-                "expired_subscriptions": stale, "failures": retry}
+                "expired_subscriptions": stale, "failures": retry,
+                "suppressed_stale": suppressed}
 
 
 def make_web_push_sender(private_pem_path: str, contact: str):

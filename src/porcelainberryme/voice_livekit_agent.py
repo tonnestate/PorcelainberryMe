@@ -170,6 +170,7 @@ class LiveKitAgentCall:
         self.tts, self.stt, self.llm, self.rtc = tts, stt, llm, rtc
         self.room = None
         self._stream_task = None
+        self._stream_track = None
         self._handoff_tasks = set()
         self._closed = asyncio.Event()
         self._engine = None
@@ -268,10 +269,28 @@ class LiveKitAgentCall:
             if track.kind != self.rtc.TrackKind.KIND_AUDIO:
                 return
             if participant.identity == self._expected_participant:
-                if self._stream_task is None:
-                    self._stream_task = asyncio.create_task(
-                        self._consume_audio(track),
-                    )
+                if (self._stream_task is not None
+                        and not self._stream_task.done()):
+                    if self._stream_track is track:
+                        return  # Duplicate SDK subscription callback.
+                    # The previous microphone was replaced. A stale
+                    # microphone task must not keep consuming audio.
+                    self._stream_task.cancel()
+                    self._engine.reset_input()
+                self._stream_track = track
+                task = asyncio.create_task(self._consume_audio(track))
+                self._stream_task = task
+
+                def stream_finished(finished):
+                    # Consume task exceptions; _consume_audio already
+                    # fails the call closed on non-cancellation errors.
+                    if not finished.cancelled():
+                        finished.exception()
+                    if self._stream_task is finished:
+                        self._stream_task = None
+                        self._stream_track = None
+
+                task.add_done_callback(stream_finished)
             else:
                 # The correct staff microphone has to be observable on the
                 # actual RTC connection before we relinquish this call.
@@ -282,6 +301,27 @@ class LiveKitAgentCall:
                 )
                 self._handoff_tasks.add(task)
                 task.add_done_callback(self._handoff_tasks.discard)
+
+        @room.on("track_unsubscribed")
+        def track_unsubscribed(track, publication, participant):
+            if (participant.identity == self._expected_participant
+                    and track is self._stream_track):
+                # Interrupt partial speech and stale response generation.
+                self._engine.reset_input()
+                if self._stream_task is not None:
+                    self._stream_task.cancel()
+                self._stream_track = None
+
+        @room.on("participant_disconnected")
+        def participant_disconnected(participant):
+            # The Python SDK may not emit track_unsubscribed after its
+            # participant entry has already disappeared. Clear partial
+            # input here as a second independent recovery path.
+            if participant.identity == self._expected_participant:
+                self._engine.reset_input()
+                if self._stream_task is not None:
+                    self._stream_task.cancel()
+                self._stream_track = None
 
         @room.on("disconnected")
         def room_disconnected(*args):

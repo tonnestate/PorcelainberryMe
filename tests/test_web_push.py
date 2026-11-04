@@ -121,6 +121,25 @@ class PushIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(CallError, "invalid_push_keys"):
             validate_subscription(info)
 
+    def test_malformed_push_authorities_are_controlled_client_errors(self):
+        # These previously raised ValueError from urllib's .port/.hostname
+        # before the API handler could translate them into HTTP 400.
+        for endpoint in (
+            "https://fcm.googleapis.com:abc/path",
+            "https://fcm.googleapis.com:65536/path",
+            "https://[bad-ipv6/path",
+            "https://fcm.googleapis.com:-1/path",
+        ):
+            with self.subTest(endpoint=endpoint):
+                subscription = self.subscription()
+                subscription["endpoint"] = endpoint
+                with self.assertRaises(CallError) as caught:
+                    validate_subscription(subscription)
+                self.assertEqual(caught.exception.status, 400)
+                with self.assertRaises(CallError) as caught:
+                    self.db.register_push(self.human, subscription)
+                self.assertEqual(caught.exception.status, 400)
+
     def test_tenant_device_isolation_and_endpoint_ownership(self):
         self.register()
         with self.assertRaisesRegex(CallError, "push_endpoint_already_owned"):
@@ -190,6 +209,42 @@ class PushIntegrationTests(unittest.TestCase):
         self.time[0] += 46
         self.assertEqual(self.db.reconcile_push(fail)["attempted"], 0)
         self.assertEqual(messages, [45, 43])
+
+    def test_dnd_or_decline_during_batch_suppresses_remaining_device_pushes(self):
+        self.register(device="a" * 32)
+        self.register(device="b" * 32)
+        original = self.ring()
+        deliveries = []
+
+        def send(subscription, payload, ttl):
+            deliveries.append(subscription["endpoint"])
+            # A first device is contacted, then the recipient immediately
+            # enables DND before the second queued notification is sent.
+            self.db.update_preferences(self.human, {"do_not_disturb": True})
+
+        result = self.db.reconcile_push(send)
+        self.assertEqual(result["attempted"], 2)
+        self.assertEqual(result["accepted_by_push_service"], 1)
+        self.assertEqual(result["suppressed_stale"], 1)
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(self.db.status(self.agent, original["id"])["state"],
+                         "DECLINED")
+        self.assertEqual(self.db.reconcile_push(lambda *args: None)["attempted"], 0)
+
+    def test_expiration_during_dispatch_suppresses_second_notification(self):
+        self.register(device="a" * 32)
+        self.register(device="b" * 32)
+        self.ring()
+        received = []
+
+        def deliver(subscription, payload, ttl):
+            received.append(ttl)
+            self.time[0] += 46
+
+        result = self.db.reconcile_push(deliver)
+        self.assertEqual(result["accepted_by_push_service"], 1)
+        self.assertEqual(result["suppressed_stale"], 1)
+        self.assertEqual(len(received), 1)
 
     def test_registration_updates_same_device_and_does_not_replay_old_pending(self):
         self.register()

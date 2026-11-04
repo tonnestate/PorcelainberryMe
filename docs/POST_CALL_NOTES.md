@@ -9,8 +9,8 @@ sets PB_CALL_NOTES_DB AND the human explicitly opts in during that call.
 The permission applies only to the current accepted call, never to future
 calls. A spoken revocation before the end prevents storage.
 
-Even after consent, only up to four short, successfully completed user
-utterances AFTER opt-in are used. No audio, full transcript, pre-consent
+Even after consent, only the four most recent short, successfully delivered
+user utterances AFTER opt-in are used. No audio, full transcript, pre-consent
 dialogue, assistant text, AI-generated facts or externally fetched data
 are written by this feature. The note is a bounded excerpt collection,
 **not an abstractive AI summary** and not a complete Fonio-equivalent

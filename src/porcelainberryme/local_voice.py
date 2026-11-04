@@ -356,6 +356,20 @@ class VoiceTurnEngine:
             if self._worker is None or self._worker.done():
                 self._worker = asyncio.create_task(self._drain())
 
+    def reset_input(self):
+        """Discard interrupted microphone segments after track loss.
+
+        A resubscribed microphone is a new acoustic input stream. Old
+        partial PCM must never be concatenated with the new stream or
+        produce a stale spoken reply/tool action after disconnection.
+        """
+        if self._closed:
+            return
+        self._epoch += 1
+        self._pending = None
+        self.detector.reset()
+        self.speaker.interrupt()
+
     async def _drain(self):
         while self._pending is not None and not self._closed:
             pcm, self._pending = self._pending, None
@@ -372,6 +386,11 @@ class VoiceTurnEngine:
                     continue
                 heard = await self.speaker.play(audio)
                 if heard and epoch == self._epoch and not self._closed:
+                    # Consent-gated notes depend on turns the other party
+                    # could actually hear, not on STT/LLM speculative work.
+                    delivered = getattr(self.llm, "on_turn_delivered", None)
+                    if delivered is not None:
+                        delivered(utterance, response)
                     self.history.extend([
                         {"role": "user", "content": utterance},
                         {"role": "assistant", "content": response},
