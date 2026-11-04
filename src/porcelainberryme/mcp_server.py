@@ -17,7 +17,7 @@ from .voice_livekit_agent import CallControlClient
 
 _CALL_ID = re.compile(r"^[a-f0-9]{32}$")
 _SUBJECT = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
-_STATES = frozenset({"RINGING", "ACTIVE", "ENDED", "DECLINED", "TIMED_OUT"})
+_STATES = frozenset({"RINGING", "ACTIVE", "ENDED", "DECLINED", "TIMED_OUT", "HANDOFF_REVOKED"})
 _DIRECTIONS = frozenset({"incoming", "outgoing"})
 
 
@@ -81,7 +81,8 @@ class MCPCallVisibility:
             "read_only": True,
             "tools": ["porcelainberryme_capabilities",
                       "porcelainberryme_active_calls",
-                      "porcelainberryme_call_status"],
+                      "porcelainberryme_call_status",
+                      "porcelainberryme_call_events"],
         }
 
     async def active_calls(self, limit: int = 20) -> dict:
@@ -96,6 +97,45 @@ class MCPCallVisibility:
             "schema": "porcelainberryme.mcp.calls.v1",
             "calls": [self._visible(item) for item in calls[:limit]],
             "truncated": len(calls) > limit,
+        }
+
+    async def call_events(self, after: int = 0, limit: int = 30) -> dict:
+        """Read bounded, ACL-filtered events without losing an event cursor.
+
+        The source API fetches up to 100 events. If the MCP client asks for
+        fewer, report the cursor from the last *returned* event, not the
+        API's later cursor, so follow-up reads never skip unread events.
+        """
+        if type(after) is not int or not 0 <= after < (1 << 63):
+            raise ValueError("mcp_invalid_event_cursor")
+        if type(limit) is not int or not 1 <= limit <= 50:
+            raise ValueError("mcp_invalid_event_limit")
+        await self._verify_identity()
+        result = await self._control.inbox(after)
+        events = result.get("events") if isinstance(result, dict) else None
+        if not isinstance(events, list) or len(events) > 100:
+            raise RuntimeError("mcp_call_events_contract_invalid")
+        entries = []
+        previous = after
+        for event in events[:limit]:
+            if not isinstance(event, dict):
+                raise RuntimeError("mcp_call_event_invalid")
+            cursor, kind = event.get("cursor"), event.get("kind")
+            if (type(cursor) is not int or not previous < cursor < (1 << 63)
+                    or not isinstance(kind, str)
+                    or not re.fullmatch(r"[A-Z_]{1,48}", kind)):
+                raise RuntimeError("mcp_call_event_invalid")
+            entries.append({
+                "cursor": cursor,
+                "kind": kind,
+                "call": self._visible(event.get("call")),
+            })
+            previous = cursor
+        return {
+            "schema": "porcelainberryme.mcp.events.v1",
+            "events": entries,
+            "next_cursor": previous,
+            "truncated": len(events) > limit,
         }
 
     async def call_status(self, call_id: str) -> dict:
@@ -131,6 +171,11 @@ def build_server(visibility: MCPCallVisibility):
     async def porcelainberryme_active_calls(limit: int = 20) -> str:
         """List bounded call state only for this authenticated participant."""
         return json.dumps(await visibility.active_calls(limit), ensure_ascii=False)
+
+    @mcp.tool()
+    async def porcelainberryme_call_events(after: int = 0, limit: int = 30) -> str:
+        """Poll authorized call events without transcripts or skipped cursors."""
+        return json.dumps(await visibility.call_events(after, limit), ensure_ascii=False)
 
     @mcp.tool()
     async def porcelainberryme_call_status(call_id: str) -> str:
