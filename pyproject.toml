@@ -31,3 +31,4 @@ where = ["src"]
 [project.scripts]
 porcelainberryme = "porcelainberryme.server:main"
 porcelainberryme-mcp = "porcelainberryme.mcp_server:main"
+porcelainberryme-asterisk = "porcelainberryme.asterisk_worker:main"
