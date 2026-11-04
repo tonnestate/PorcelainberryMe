@@ -942,7 +942,7 @@ def control_ready(registry: CallRegistry) -> bool:
         return False
 
 
-def make_handler(registry: CallRegistry):
+def make_handler(registry: CallRegistry, *, self_call=None):
     """Loopback-only headless API; external TLS/auth proxy is separate."""
     class Handler(BaseHTTPRequestHandler):
         def _reply(self, status, data):
@@ -993,6 +993,17 @@ def make_handler(registry: CallRegistry):
                         "tenant": claims["tenant"], "subject": claims["sub"],
                         "role": claims["role"],
                     })
+                if uri.path == "/v1/ip-calls/call-me":
+                    if self_call is None:
+                        raise CallError("call_me_not_configured", 503)
+                    if self.command == "POST":
+                        return self._reply(202, self_call.request(
+                            claims, self._body(),
+                        ))
+                    if self.command == "DELETE":
+                        return self._reply(200, self_call.revoke(
+                            claims, self._body(),
+                        ))
                 if uri.path == "/v1/ip-calls/preferences":
                     if self.command == "GET":
                         return self._reply(200, registry.preferences(claims))
@@ -1173,8 +1184,22 @@ def main():
             args.tenant, args.assistant, None if args.disable else args.staff,
         )
         return
+    # The first-party "call me" endpoint is explicitly host-configured.
+    # Its recipient comes solely from the verified human JWT, and the AI
+    # agent is a fixed enrolled identity. No model-provided phone number.
+    self_call = None
+    jobs_path = os.environ.get("PB_CALL_JOBS_DB", "").strip()
+    fixed_agent = os.environ.get("PB_CALL_ME_AGENT_ID", "").strip()
+    if bool(jobs_path) != bool(fixed_agent):
+        parser.error("self-call requires both private jobs DB and fixed agent")
+    if jobs_path:
+        from .outbound_jobs import DurableCallJobs
+        from .self_call import AuthenticatedSelfCall
+        self_call = AuthenticatedSelfCall(
+            registry, DurableCallJobs(jobs_path), agent_id=fixed_agent,
+        )
     server = BoundedCallHTTPServer(("127.0.0.1", args.port),
-                                   make_handler(registry))
+                                   make_handler(registry, self_call=self_call))
     stop = threading.Event()
     worker = None
     terminator = None
