@@ -100,13 +100,23 @@ class DurableCallJobs:
                     'APPROVED','QUEUED','DISPATCHING','FINISHED_UNVERIFIED',
                     'FAILED','UNKNOWN','EXPIRED')),
                   claimed_at INTEGER,
-                  completed_at INTEGER
+                  completed_at INTEGER,
+                  revoked_at INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS outbound_calls_claim_idx
                   ON outbound_call_jobs(tenant,agent,state,created_at);
                 CREATE INDEX IF NOT EXISTS outbound_calls_consent_idx
                   ON outbound_call_jobs(tenant,consent_fingerprint);
             """)
+            columns = {
+                row["name"] for row in db.execute(
+                    "PRAGMA table_info(outbound_call_jobs)"
+                )
+            }
+            if "revoked_at" not in columns:
+                db.execute(
+                    "ALTER TABLE outbound_call_jobs ADD COLUMN revoked_at INTEGER"
+                )
 
     @contextmanager
     def _db(self):
@@ -125,8 +135,13 @@ class DurableCallJobs:
         return {
             "schema": "porcelainberryme.outbound-job.v1",
             "approval_id": row["approval_id"],
-            "state": row["state"],
+            "state": (
+                "REVOKED"
+                if row["state"] == "EXPIRED" and row["revoked_at"] is not None
+                else row["state"]
+            ),
             "call_result_verified": False,
+            "revocation_confirmed": row["revoked_at"] is not None,
         }
 
     def approve(self, *, tenant: str, agent: str, recipient: str,
@@ -224,6 +239,32 @@ class DurableCallJobs:
                     "UPDATE outbound_call_jobs SET state=? WHERE approval_id=?",
                     (new_state, approval_id),
                 )
+                row = self._row(db, approval_id, tenant, agent, recipient)
+            db.commit()
+            return self._public(row)
+
+    def revoke(self, *, approval_id: str, tenant: str,
+               agent: str, recipient: str) -> dict:
+        """Trusted host: atomically withdraw consent before origination.
+
+        A queued invitation can be revoked until a worker has claimed it.
+        Once state is DISPATCHING, the call outcome is potentially
+        ambiguous. Never claim a successful cancellation then: the host
+        must use the authenticated call-control hangup when appropriate.
+        """
+        approval_id = _approval(approval_id)
+        tenant, agent, recipient = map(_identity, (tenant, agent, recipient))
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._row(db, approval_id, tenant, agent, recipient)
+            if row["state"] in ("APPROVED", "QUEUED"):
+                stamp = int(self.clock())
+                db.execute("""
+                    UPDATE outbound_call_jobs
+                       SET state='EXPIRED', revoked_at=?, completed_at=?
+                     WHERE approval_id=? AND tenant=? AND agent=?
+                       AND recipient=? AND state IN ('APPROVED','QUEUED')
+                """, (stamp, stamp, approval_id, tenant, agent, recipient))
                 row = self._row(db, approval_id, tenant, agent, recipient)
             db.commit()
             return self._public(row)
@@ -428,6 +469,12 @@ def main() -> None:
     approve.add_argument("--recipient", required=True)
     approve.add_argument("--consent-reference", required=True)
     approve.add_argument("--ttl", type=int, default=120)
+    revoke = sub.add_parser(
+        "revoke", help="TRUSTED HOST ONLY: revoke unstarted approved call")
+    revoke.add_argument("--tenant", required=True)
+    revoke.add_argument("--agent", required=True)
+    revoke.add_argument("--recipient", required=True)
+    revoke.add_argument("--approval-id", required=True)
     worker = sub.add_parser("work", help="Run supervised local outbound voice worker")
     worker.add_argument("--tenant", required=True)
     worker.add_argument("--agent", required=True)
@@ -446,6 +493,15 @@ def main() -> None:
         )
         # The approval token is a secret: only operator stdout; never logfile.
         print(approval_id)
+        return
+    if args.command == "revoke":
+        if os.environ.get("PB_CALL_REVOCATION_HOST_ENABLED") != "1":
+            parser.error("host revocation disabled; explicit trusted operator required")
+        result = store.revoke(
+            approval_id=args.approval_id, tenant=args.tenant,
+            agent=args.agent, recipient=args.recipient,
+        )
+        print(result["state"])
         return
     secret = os.environ.get("PB_CALL_IDENTITY_SECRET", "")
     voice_settings = {
