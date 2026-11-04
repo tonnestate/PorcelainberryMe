@@ -110,8 +110,11 @@ ausschließlich folgende Ziele verwendet:
 Für Installationen, die ausdrücklich keine Web-Push-Anrufzustellung
 unterstützen sollen, kann `--no-mobile-push` gesetzt werden. Das
 entspricht **nicht** einem produktiven mobilen Fonio-Ersatz.
-Bei öffentlicher Telefonie `--require-pstn` setzen; dies markiert
-Asterisk-/SIP-Carrier-Abnahmen als zusätzliche offene Nachweise.
+Bei öffentlicher Telefonie `--require-pstn` setzen. Zusätzlich zum
+Vorhandensein einer strikt konfigurierten Stasis-App/Dialplan-Route
+prüft der Release-Check dann die authentisierte lokale Asterisk-REST-API
+und die registrierte Stasis-Anwendung mit zwei lesenden ARI-Abfragen.
+Die reale SIP-Trunk-/Carrier-Abnahme bleibt ein getrennter Nachweis.
 
 Ein Status `configuration_passed=true` bzw.
 `runtime_checks_passed=true` bedeutet nur, dass die technischen
@@ -152,7 +155,7 @@ reichen dafür nicht aus.
 
 | Gate | Nachweis | Derzeit |
 | --- | --- | --- |
-| A. Codeintegrität | Python 3.11/3.12, Browser, MCP-SDK und Asterisk-WebSocket/ARI CI | Implementiert, nach jeder Änderung erneut prüfen |
+| A. Codeintegrität | Python 3.11/3.12, Browser, MCP-SDK sowie Asterisk-Stasis/ARI/PCM-E2E im lokalen HTTP/WebSocket-Test | Implementiert, nach jeder Änderung erneut prüfen |
 | B. Medien-Pipeline | Echter LiveKit-WebRTC-Audiotransport mit synthetischen lokalen Modellen | In GitHub CI nachgewiesen; kein echter Sprachmodell-Nachweis |
 | C. Betrieb | Privater DB-Pfad, wiederanlaufbarer Worker, Health/Ready, verifizierte Signierschlüssel | Code vorhanden; reale Serviceinstallation offen |
 | D. Sicherheit | Authentisierte Aufnahme, Mandantentrennung, DND, Opt-in, Tokenrotation, Rücknahme | Source-Tests vorhanden; produktiver Penetrationstest offen |
