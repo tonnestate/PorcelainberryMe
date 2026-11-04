@@ -69,6 +69,29 @@ to assert the exact five default read-only registered tools, per-request identit
 redacted output, cross-tenant refusal, invalid arguments and disallowed
 read-only scope escalation. They do not start an installed MCP SDK or host.
 
+## Opt-in personal WhatsApp MCP (existing owner account only)
+
+A dedicated authenticated, supervised owner-agent MCP process can additionally
+expose `porcelainberryme_whatsapp_inbox`,
+`porcelainberryme_whatsapp_send` and
+`porcelainberryme_whatsapp_send_status`. They are **absent by default**.
+No new WhatsApp transport or second consumer is created: sending uses the
+existing bearer-authorized TonnEstate/Aurora endpoint. Incoming messages are
+read only from an existing private, owner-scoped PorcelainberryMe event
+ledger; this is not remote WhatsApp history synchronization.
+
+The host must independently verify the human owner's consent for the exact
+recipient and message, and create one short-lived approval in the persistent
+`OwnerWhatsAppApprovals` store. MCP can only submit that opaque approval ID,
+not a freeform message or contact. Provider-accepted means **not**
+human-delivered, and ambiguous results never trigger automatic resends.
+The signed call-control identity and original TonnEstate owner bearer
+remain separate authorization checks. The operator must retain, purge,
+secure and recover the persistent approval database.
+
+Complete configuration and acceptance boundaries:
+[Personal WhatsApp MCP](WHATSAPP_MCP.md).
+
 ## Customer call / CRM integration: still open
 
 This **does not** mean PorcelainberryMe already executes GreenGrapeMe,
