@@ -20,6 +20,7 @@ from .agent_knowledge import DEFAULT_GREETING
 from .local_voice import (
     AudioPacket, LocalFasterWhisper, LocalOllamaResponder,
     LocalPiperVoice, LocalVoiceUnavailable, VoiceTurnEngine,
+    WebRTCTurnDetector,
 )
 
 
@@ -262,6 +263,7 @@ class LiveKitAgentCall:
         self._engine = VoiceTurnEngine(
             self.stt, self.llm, self.tts, speaker,
             on_unavailable=self._closed.set,
+            vad_backend=os.environ.get("PB_LOCAL_VAD", "energy"),
         )
 
         @room.on("track_subscribed")
@@ -399,6 +401,12 @@ async def prepare_local_voice(*, tenant: str, agent_id: str,
                               whisper_model: str, ollama_model: str,
                               piper_binary: str, piper_model: str):
     """Preflight local speech before accepting or starting a call."""
+    vad_backend = os.environ.get("PB_LOCAL_VAD", "energy")
+    if vad_backend == "webrtc":
+        # Fail before ringing if the opt-in native VAD dependency is missing.
+        WebRTCTurnDetector()
+    elif vad_backend != "energy":
+        raise ValueError("invalid_vad_backend")
     stt = await asyncio.to_thread(LocalFasterWhisper, whisper_model)
     approved_db = os.environ.get("PB_AGENT_KNOWLEDGE_DB", "").strip()
     if approved_db:
