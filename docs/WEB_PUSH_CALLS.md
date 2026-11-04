@@ -32,6 +32,15 @@ validated as controlled request errors instead of exposing underlying
 URL parser failures. Only approved HTTPS push-service hosts remain allowed;
 this does not guarantee that a handset will display a notification.
 
+A queued notification is revalidated against the live call state, DND,
+subscription endpoint, intended recipient and expiry immediately before
+each network send. This suppresses stale notifications when a recipient
+declines a call or enables DND while a multi-device batch is running.
+The extra `suppressed_stale` result counter records such suppressed jobs.
+There remains an unavoidable short race after this recheck and before an
+external push provider receives the request; an already transmitted push
+cannot be recalled.
+
 ## Configure on existing infrastructure
 
 Install only the optional free sender dependency:
