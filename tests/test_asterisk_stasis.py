@@ -98,6 +98,37 @@ class TrustedStasisTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stopped.is_set())
         self.assertEqual(worker.failed, 0)
 
+    async def test_stasis_end_immediately_cancels_only_owned_channel(self):
+        worker = listener()
+        started = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def ongoing(channel_id):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                finished.set()
+
+        worker._serve_one = ongoing
+        self.assertTrue(worker.accept_event(stasis_event()))
+        await asyncio.wait_for(started.wait(), 1)
+        self.assertFalse(worker.accept_event({
+            "type": "StasisEnd", "application": "other_app",
+            "channel": channel(),
+        }))
+        self.assertFalse(worker.accept_event({
+            "type": "StasisEnd", "application": APP,
+            "channel": channel("PJSIP-not-ours.2"),
+        }))
+        self.assertFalse(finished.is_set())
+        self.assertTrue(worker.accept_event({
+            "type": "StasisEnd", "application": APP, "channel": channel(),
+        }))
+        await asyncio.wait_for(finished.wait(), 1)
+        await worker.close()
+        self.assertEqual(worker.failed, 0)
+
     async def test_double_check_with_real_ari_stasis_authorization_hook(self):
         try:
             import aiohttp
