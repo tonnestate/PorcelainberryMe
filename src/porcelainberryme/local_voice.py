@@ -311,7 +311,7 @@ class LocalOllamaResponder:
                         # Only emit complete sentence boundaries. Sentence
                         # content stays bounded by the 500-character limit.
                         while True:
-                            boundary = re.search(r"[.!?]\\s+", remaining)
+                            boundary = re.search(r"[.!?]\s+", remaining)
                             if boundary is None:
                                 break
                             sentence = remaining[:boundary.start() + 1].strip()
