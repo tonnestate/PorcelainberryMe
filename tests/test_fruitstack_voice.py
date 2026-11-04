@@ -6,9 +6,15 @@ assistant result becomes spoken completion. No model or external call.
 """
 from __future__ import annotations
 
+import asyncio
+import base64
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import os
 from pathlib import Path
+import struct
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -16,6 +22,7 @@ from porcelainberryme.contracts import InboundEvent
 from porcelainberryme.fruitstack_voice import FruitStackOwnerVoiceResponder
 from porcelainberryme.harness_ananasme import AnanasMeOwnerHarness, HarnessAdmission
 from porcelainberryme.ledger import Ledger
+from porcelainberryme.local_voice import AudioPacket, VoiceTurnEngine
 from porcelainberryme.voice_livekit_agent import make_call_responder
 
 
@@ -173,6 +180,116 @@ class OwnerFruitStackVoiceTests(unittest.IsolatedAsyncioTestCase):
         stacked.on_turn_delivered("Geprüfte Anfrage", spoken)
         self.assertIsNone(voice._pending)
         self.assertEqual(self.harness.submit_owner_message.call_count, 1)
+
+    async def test_websocket_voice_engine_to_real_loopback_native_result_contract(self):
+        """A native-shape HTTP AnanasMe fake, real ledger and real PCM engine."""
+        received = []
+
+        class NativeHTTP(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def authenticated(self):
+                expected = "Basic " + base64.b64encode(
+                    ("porcelainberryme:" + "z" * 32).encode(),
+                ).decode()
+                return self.headers.get("Authorization") == expected
+
+            def do_POST(self):
+                if (not self.authenticated()
+                        or self.path != "/api/threads/" + "b" * 32 + "/messages"):
+                    self.send_error(403)
+                    return
+                payload = json.loads(self.rfile.read(
+                    int(self.headers["Content-Length"]),
+                ))
+                received.append(payload)
+                assert payload["mode"] == "chat"
+                assert len(payload["request_id"]) == 32
+                response = {"message_id": ASSISTANT_ID, "state": "QUEUED",
+                            "replayed": False}
+                wire = json.dumps(response).encode()
+                self.send_response(202)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(wire)))
+                self.end_headers()
+                self.wfile.write(wire)
+
+            def do_GET(self):
+                if (not self.authenticated()
+                        or self.path != "/api/messages/" + ASSISTANT_ID + "/result"):
+                    self.send_error(403)
+                    return
+                response = {
+                    "schema": "ananasme.assistant-result.v1",
+                    "message_id": ASSISTANT_ID,
+                    "thread_id": "b" * 32,
+                    "state": "DONE",
+                    "deliverable": True,
+                    "reply": "AnanasMe hat den Status bestätigt.",
+                }
+                wire = json.dumps(response).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(wire)))
+                self.end_headers()
+                self.wfile.write(wire)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), NativeHTTP)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            real_harness = AnanasMeOwnerHarness(
+                port=server.server_port, token="z" * 32,
+                verify_owner=lambda event: event.sender == "verified-owner",
+                resolve_thread=lambda event: "b" * 32,
+            )
+            owner = FruitStackOwnerVoiceResponder(
+                tenant="tenantA", assistant="assistant", caller="verified-owner",
+                ledger=self.ledger, harness=real_harness,
+                authorize_owner=self.owner_policy, poll_count=1,
+            )
+            owner.set_call_id(CALL)
+
+            class STT:
+                async def transcribe(self, pcm):
+                    return "Bitte Status prüfen."
+
+            class TTS:
+                async def synthesize(self, text):
+                    return AudioPacket(struct.pack("<320h", *([1200] * 320)), 16000)
+
+            class Speaker:
+                def __init__(self):
+                    self.spoken = []
+                def interrupt(self):
+                    pass
+                async def play(self, packet):
+                    self.spoken.append(packet)
+                    return True
+
+            speaker = Speaker()
+            engine = VoiceTurnEngine(STT(), owner, TTS(), speaker)
+            loud = struct.pack("<320h", *([1200] * 320))
+            silence = bytes(640)
+            for _ in range(12):
+                engine.receive(loud)
+            for _ in range(35):
+                engine.receive(silence)
+            await asyncio.wait_for(engine._worker, 3)
+            self.assertEqual(engine.turn_errors, 0)
+            self.assertEqual(engine.turns_completed, 1)
+            self.assertEqual(engine.history[-1]["content"],
+                             "AnanasMe hat den Status bestätigt.")
+            self.assertEqual(len(speaker.spoken), 1)
+            self.assertEqual(len(received), 1)
+            self.assertEqual(received[0]["text"], "Bitte Status prüfen.")
+            self.assertIsNone(owner._pending)  # only cleared after real PCM
+            await engine.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=2)
 
     async def test_customer_stack_cannot_select_wrong_owner_backend(self):
         voice = self.responder()
