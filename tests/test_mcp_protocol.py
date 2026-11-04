@@ -87,6 +87,45 @@ class MCPProtocolTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(any("dial" in name or "hangup" in name
                                          for name in tools))
 
+    async def test_durable_stdio_tool_requires_explicit_host_approval_id(self):
+        try:
+            from mcp import ClientSession
+            from mcp.client.stdio import StdioServerParameters, stdio_client
+        except ImportError:
+            self.skipTest("optional MCP SDK not installed")
+        from pathlib import Path
+        import tempfile
+        from porcelainberryme.outbound_jobs import DurableCallJobs
+        with tempfile.TemporaryDirectory() as tmp:
+            database = str(Path(tmp) / "approved.sqlite")
+            DurableCallJobs(database)
+            config = StdioServerParameters(
+                command=sys.executable,
+                args=["-m", "porcelainberryme.mcp_server"],
+                env={
+                    **os.environ,
+                    "PB_MCP_CALL_TOKEN": "fake-agent-test-token-0123456789abcdef",
+                    "PB_MCP_CALL_TOKEN_FILE": "",
+                    "PB_MCP_TENANT": "tenantA",
+                    "PB_MCP_SUBJECT": "assistant",
+                    "PB_MCP_ROLE": "agent",
+                    "PB_MCP_CALL_ME_ENABLED": "1",
+                    "PB_MCP_CALL_ME_TARGET": "preapproved_user",
+                    "PB_MCP_CALL_ME_REQUEST_ID": "",
+                    "PB_CALL_JOBS_DB": database,
+                },
+            )
+            async with asyncio.timeout(15):
+                async with stdio_client(config) as (reader, writer):
+                    async with ClientSession(reader, writer) as client:
+                        await client.initialize()
+                        available = await client.list_tools()
+                        names = {tool.name for tool in available.tools}
+                        self.assertIn("porcelainberryme_call_me", names)
+                        self.assertIn("porcelainberryme_call_me_status", names)
+                        self.assertFalse(any("approve" in name for name in names))
+
+
 
 if __name__ == "__main__":
     unittest.main()
