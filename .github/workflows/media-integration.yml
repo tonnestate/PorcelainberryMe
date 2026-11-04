@@ -1,8 +1,27 @@
 name: Self-hosted WebRTC media integration
 
-# No ongoing hosted provider or recurring job. Execute only on relevant PRs.
+# No recurring hosted provider or scheduled job. Run on relevant PRs and
+# on main: direct-main development must not bypass actual WebRTC media CI.
 # GitHub Actions runner minutes may count against repository plan quotas.
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/media-integration.yml'
+      - 'scripts/**'
+      - 'src/porcelainberryme/local_voice.py'
+      - 'src/porcelainberryme/voice_livekit_agent.py'
+      - 'src/porcelainberryme/voice_inbound_agent.py'
+      - 'src/porcelainberryme/ip_inbound.py'
+      - 'src/porcelainberryme/ip_handoff.py'
+      - 'src/porcelainberryme/voice_handoff.py'
+      - 'src/porcelainberryme/ip_calls.py'
+      - 'src/porcelainberryme/media_cleanup.py'
+      - 'src/porcelainberryme/appointments.py'
+      - 'src/porcelainberryme/call_notes.py'
+      - 'src/porcelainberryme/agent_knowledge.py'
+      - 'src/porcelainberryme/document_knowledge.py'
+      - 'pyproject.toml'
   pull_request:
     paths:
       - '.github/workflows/media-integration.yml'
