@@ -521,6 +521,16 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                     raise CallError("account_not_enrolled", 403)
                 if users[callee]["do_not_disturb"]:
                     raise CallError("recipient_do_not_disturb", 409)
+                # An explicitly disabled AI receptionist must not cause
+                # an unanswered customer ring just because its identity
+                # still exists in the trusted account directory.
+                inbound = con.execute(
+                    "SELECT enabled FROM ip_inbound_agents "
+                    "WHERE tenant=? AND assistant=?",
+                    (tenant, callee),
+                ).fetchone()
+                if inbound is not None and not inbound["enabled"]:
+                    raise CallError("inbound_agent_not_enabled", 409)
                 if claims["role"] == "agent":
                     if not users[callee]["agent_calls"]:
                         raise CallError("agent_call_not_opted_in", 403)
