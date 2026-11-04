@@ -258,6 +258,18 @@ export class IPCallClient {
     }
   }
 
+  async setMicrophoneMuted(muted) {
+    // Same authenticated and already-accepted LiveKit room. Do not request
+    // a microphone or join media as a side effect of toggling a control.
+    if (typeof muted !== 'boolean') throw new Error('invalid_microphone_muted');
+    const publisher = this.room?.localParticipant;
+    if (!publisher || typeof publisher.setMicrophoneEnabled !== 'function') {
+      throw new Error('media_not_connected');
+    }
+    await publisher.setMicrophoneEnabled(!muted);
+    return { muted };
+  }
+
   async disconnect() {
     const room = this.room;
     this.room = null;
