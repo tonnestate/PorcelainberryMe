@@ -86,9 +86,14 @@ a mixing bridge, attaches an incoming slin16 JSON WebSocket externalMedia
 channel, obtains its MEDIA_WEBSOCKET_CONNECTION_ID, and runs the
 existing AsteriskVoiceMedia/Piper/Whisper/Ollama worker. It cleans up
 only media and bridge resources created by the helper, never the caller.
-The separately authenticated Stasis host must still provide the
-authorizer and subscribe to incoming call events. A caller ID or a
-phone number is not a credential.
+The dedicated `porcelainberryme-asterisk-stasis` worker now connects to
+the authenticated loopback ARI `/ari/events` WebSocket itself, and matches
+only the **exact configured Stasis app + dialplan context + extension**.
+Before creating any media resources, it re-reads the original channel via
+authenticated ARI GET and verifies the same route. It rejects other
+apps, contexts, dialplan extensions and duplicated StasisStart events.
+A caller ID or a phone number is not a credential, and this route is
+not an authorization for private FruitStack owner commands.
 
 This ARI control path is tested against a real locally simulated ARI
 HTTP server, including successful setup, denial, bounded responses,
@@ -97,8 +102,9 @@ a deployed Asterisk installation or working PSTN numbers.
 
 ## Explicitly unimplemented / deployment gates
 
-- The real deployed Stasis subscription and host-side caller permission
-  resolution, plus verified media worker supervision for each phone call.
+- Real service installation on the user's Asterisk host; proof that the
+  trusted dialplan route cannot be selected by unauthorized callers and
+  that channel/media cleanup survives actual connection failures.
 - An installed, configured SIP trunk and permission to originate/receive
   real public E.164 calls. Asterisk is free software, not a free connection
   to the national mobile network.
@@ -115,3 +121,63 @@ and Asterisk host have passed their independent real-call acceptance tests.
 Tests: `tests/test_asterisk_ws.py` (PCM/mark/FLUSH/XON) and
 `tests/test_asterisk_worker.py` (a real aiohttp WebSocket loopback
 handshake, PCM path, and signed-channel binding semantics).
+
+## Supervised Stasis event listener (new)
+
+The same package now contains a persistent listener that watches the
+**locally authenticated** Asterisk Stasis application. It starts up to
+four (default one) preauthorized sessions and handles temporary ARI
+WebSocket disconnects without replaying previous calls. Unknown
+or differently routed Stasis events are rejected before creating a
+media bridge. It never uses an incoming Caller-ID to unlock the private
+FruitStack owner agent.
+
+The existing host must define an Asterisk dialplan context that routes
+only calls approved for this public-facing AI receptionist into the
+configured Stasis app. Example **configuration template only**:
+
+```asterisk
+[pbx_ai_entry]
+exten => s,1,NoOp(Approved public-facing AI receptionist route)
+ same => n,Stasis(porcelain_voice)
+ same => n,Hangup()
+```
+
+The following service environment settings must be provisioned through
+a private, root-managed environment file (do not commit actual values):
+
+```ini
+PB_ASTERISK_STASIS_ENABLED=1
+PB_ASTERISK_STASIS_APP=porcelain_voice
+PB_ASTERISK_TRUSTED_CONTEXT=pbx_ai_entry
+PB_ASTERISK_TRUSTED_EXTENSION=s
+PB_ASTERISK_ARI_USER=HOST_CONFIGURED_ARI_USER
+PB_ASTERISK_ARI_PASSWORD=HOST_CONFIGURED_ARI_PASSWORD
+PB_ASTERISK_ARI_PORT=8088
+PB_ASTERISK_TENANT=HOST_APPROVED_TENANT
+PB_ASTERISK_ASSISTANT=HOST_APPROVED_AGENT
+PB_ASTERISK_MAX_CALLS=1
+PB_LOCAL_WHISPER_DIR=/preinstalled/whisper
+PB_LOCAL_VOICE_CHAT_MODEL=preinstalled-fast-ollama-model
+PB_LOCAL_PIPER_BIN=/preinstalled/piper
+PB_LOCAL_PIPER_MODEL=/preinstalled/voice.onnx
+```
+
+The example is not a deployed service or a claim that these local
+files/identities exist. To run on the actual host, install the project's
+optional `voice-local` dependencies, verify local model availability and
+restrict the ARI endpoint to 127.0.0.1. Then use the repository's
+`deploy/systemd/porcelainberryme-asterisk-stasis.service.example`
+as an **uninstalled** template for one supervised worker. Exposing ARI
+or the unencrypted Asterisk media WebSocket on a public interface is not
+supported by this integration.
+
+Production acceptance of an actual telephone service must still prove
+the intended dialplan routing, SIP-trunk connectivity (when PSTN is
+required), call audio in both directions, ring/hangup behavior, memory
+capacity, privacy, and recovery on the actual Asterisk host.
+
+The release gate, when invoked with `--network --require-pstn`, now
+checks the configured fixed Stasis route and uses authenticated
+`GET /ari/asterisk/info` on 127.0.0.1. Passing that HTTP check means
+the API responds, **not** that a carrier or real call works.
