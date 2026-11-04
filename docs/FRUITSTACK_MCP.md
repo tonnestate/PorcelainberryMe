@@ -86,3 +86,43 @@ FruitStack host rather than install a second cognitive runtime. On
 current source evidence, that inbound MCP **client** binding, real CRM
 contact context and end-to-end effect receipts are NOT implemented.
 A production installation still needs configuration and runtime acceptance.
+
+## Opt-in outgoing Internet voice from a trusted Hermes/FruitStack MCP host
+
+The default MCP process remains read-only. A dedicated, supervised MCP stdio
+instance can start **one fixed, previously approved** LiveKit voice job when:
+- `PB_MCP_CALL_ME_ENABLED=1`
+- `PB_MCP_CALL_ME_TARGET` is the already enrolled Internet participant ID,
+  obtained from the trusted host, never extracted from an LLM prompt
+- `PB_MCP_CALL_ME_REQUEST_ID` is a unique, stable, host-generated idempotency
+  key for **this one approved user action** (8..128 safe characters)
+- The MCP token authenticates an `agent` identity matching the configured
+  tenant and subject; a customer/human identity cannot enable calling
+- The preinstalled Whisper, Piper and local Ollama or approved knowledge
+  resources are configured using the existing `PB_LOCAL_*` environment.
+
+Only that opted-in process registers the additional tools:
+- `porcelainberryme_call_me()`: **no arguments**; schedules the existing
+  outbound `call_human` worker which preflights models before ringing and
+  handles real LiveKit audio after acceptance.
+- `porcelainberryme_call_me_status()`: reports the in-process task state.
+  `IN_PROGRESS`, `FAILED`, `CANCELLED` and `FINISHED_UNVERIFIED` are
+  truthful execution states, **not evidence of an answered call**.
+
+One MCP process never starts this approved request more than once. Repeated
+calls reuse the same task, and the server-side call registry deduplicates
+the same stable request ID across process restarts. A subsequent explicit
+call needs a newly approved request ID and new supervised MCP process.
+There is no arbitrary phone number, dialer, SMS fallback or owner-harness
+action tool exposed to the model.
+
+**Important lifecycle limitation:** the worker is a task in the MCP stdio
+process. The Hermes/FruitStack host must keep the process alive for the
+duration of the call; disconnecting/terminating it can interrupt the audio
+worker. Run the existing `voice_livekit_agent.call_human` CLI under normal
+host service supervision if calls must outlive an MCP session. No additional
+paid model service or separate agent is required.
+
+Custom write-enabled MCP support inside a ChatGPT account is a separate
+product capability and connection step: publishing this source does not
+automatically add a callable tool to this particular ChatGPT conversation.
