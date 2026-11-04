@@ -94,6 +94,7 @@ class AsteriskStasisListener:
         self.voice_settings = dict(voice_settings)
         self.max_calls = max_calls
         self._calls: dict[str, asyncio.Task] = {}
+        self._busy_returns: dict[str, asyncio.Task] = {}
         self._seen: deque[str] = deque(maxlen=4096)
         self.dispatched = 0
         self.rejected = 0
@@ -108,6 +109,45 @@ class AsteriskStasisListener:
                 self.failed += 1
                 # No channel, Caller-ID, token, transcript or remote response.
                 print("asterisk_stasis_session_failed", file=sys.stderr)
+
+    async def _return_caller(self, session, channel_id) -> bool:
+        """Return an exact verified Stasis channel to its trusted dialplan.
+
+        This performs no arbitrary hangup and does not retry ambiguous ARI
+        effects. The host dialplan determines its next step.
+        """
+        try:
+            current = await self.ari._call(
+                session, "GET", f"/channels/{channel_id}",
+            )
+            if not self.route.allows(current, expected_id=channel_id):
+                return False
+            await self.ari._call(
+                session, "POST", f"/channels/{channel_id}/continue",
+            )
+            return True
+        except Exception:
+            # Disconnected/unverified channels are not force-hung-up.
+            print("asterisk_stasis_return_unconfirmed", file=sys.stderr)
+            return False
+
+    async def _reject_busy(self, channel_id):
+        """Release only an independently reverified capacity-excess call."""
+        try:
+            import aiohttp
+        except ImportError as exc:
+            raise StasisListenerError("asterisk_aiohttp_not_installed") from exc
+        async with aiohttp.ClientSession() as session:
+            await self._return_caller(session, channel_id)
+
+    def _busy_return_finished(self, channel_id, task):
+        self._busy_returns.pop(channel_id, None)
+        if not task.cancelled():
+            try:
+                task.result()
+            except Exception:
+                print("asterisk_stasis_overload_return_failed",
+                      file=sys.stderr)
 
     async def _serve_one(self, channel_id):
         try:
@@ -127,24 +167,9 @@ class AsteriskStasisListener:
                     **self.voice_settings,
                 )
             finally:
-                # The standalone listener IS this Stasis application's host.
-                # On normal media completion or failure return only its
-                # still-authorized original caller to the next dialplan step.
-                # The trusted dialplan then hangs up or handles its fallback.
-                # Without this, an answered caller can remain stuck in Stasis
-                # after our externalMedia channel and bridge have closed.
-                try:
-                    current = await self.ari._call(
-                        session, "GET", f"/channels/{channel_id}",
-                    )
-                    if self.route.allows(current, expected_id=channel_id):
-                        await self.ari._call(
-                            session, "POST", f"/channels/{channel_id}/continue",
-                        )
-                except Exception:
-                    # A disconnected or already-released caller must not
-                    # trigger automatic retries or an unrelated hangup.
-                    print("asterisk_stasis_return_unconfirmed", file=sys.stderr)
+                # Returning to the next trusted dialplan step prevents
+                # answered callers from becoming stuck after media cleanup.
+                await self._return_caller(session, channel_id)
 
     def accept_event(self, event: dict) -> bool:
         """Bounded call admission and immediate peer-hangup cancellation.
@@ -158,6 +183,8 @@ class AsteriskStasisListener:
             ended = event.get("channel")
             channel_id = ended.get("id") if isinstance(ended, dict) else None
             task = self._calls.get(channel_id) if isinstance(channel_id, str) else None
+            if task is None and isinstance(channel_id, str):
+                task = self._busy_returns.get(channel_id)
             if task is not None and not task.done():
                 task.cancel()
                 return True
@@ -165,11 +192,22 @@ class AsteriskStasisListener:
         channel_id = self.route.inbound_channel(event)
         if channel_id is None:
             return False
-        if (channel_id in self._calls or channel_id in self._seen
-                or len(self._calls) >= self.max_calls):
+        if channel_id in self._calls or channel_id in self._seen:
             self.rejected += 1
             return False
         self._seen.append(channel_id)
+        if len(self._calls) >= self.max_calls:
+            self.rejected += 1
+            # Never answer or bridge an overload call. Release it via the
+            # verified dialplan continuation, which can reject/fallback.
+            # Bound cleanup tasks too, so a flood cannot exhaust the host.
+            if len(self._busy_returns) < 4:
+                task = asyncio.create_task(self._reject_busy(channel_id))
+                self._busy_returns[channel_id] = task
+                task.add_done_callback(
+                    lambda done: self._busy_return_finished(channel_id, done),
+                )
+            return False
         task = asyncio.create_task(self._serve_one(channel_id))
         self._calls[channel_id] = task
         task.add_done_callback(
@@ -179,7 +217,7 @@ class AsteriskStasisListener:
         return True
 
     async def close(self):
-        tasks = tuple(self._calls.values())
+        tasks = tuple(self._calls.values()) + tuple(self._busy_returns.values())
         for task in tasks:
             task.cancel()
         if tasks:
