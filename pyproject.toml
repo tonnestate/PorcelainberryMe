@@ -32,3 +32,4 @@ where = ["src"]
 porcelainberryme = "porcelainberryme.server:main"
 porcelainberryme-mcp = "porcelainberryme.mcp_server:main"
 porcelainberryme-asterisk = "porcelainberryme.asterisk_worker:main"
+porcelainberryme-call-worker = "porcelainberryme.outbound_jobs:main"
