@@ -45,6 +45,9 @@ class HumanHandoffResponder:
     def set_call_id(self, call_id: str):
         if self.call_id is not None and self.call_id != call_id:
             raise ValueError("handoff_bound_to_another_call")
+        bind = getattr(self.responder, "set_call_id", None)
+        if bind is not None:
+            bind(call_id)
         self.call_id = call_id
 
     async def respond(self, text: str, history: list[dict]) -> str:
