@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import shutil
 import struct
+import threading
 import subprocess
 import time
 from typing import Callable, Protocol
@@ -183,22 +184,33 @@ class LocalFasterWhisper:
             raise LocalVoiceUnavailable("faster_whisper_not_installed") from exc
         self.model = WhisperModel(str(path), device=device,
                                   compute_type="int8" if device == "cpu" else "float16")
+        # A cancelled asyncio.to_thread() does not stop its native CTranslate2
+        # inference thread. Keep the slot until that real thread exits.
+        self._inference_slot = threading.Lock()
 
     async def transcribe(self, pcm: bytes) -> str:
         if not 0 < len(pcm) <= MAX_TURN_BYTES or len(pcm) % 2:
             raise ValueError("invalid_transcription_pcm")
 
         def infer():
+            # Never launch a second native inference on the same model while
+            # an interrupted prior call still owns its actual worker thread.
+            # Fail closed rather than pile up unbounded waiting threads.
+            if not self._inference_slot.acquire(blocking=False):
+                raise LocalVoiceUnavailable("local_whisper_inference_busy")
             try:
-                import numpy as np
-            except ImportError as exc:
-                raise LocalVoiceUnavailable("numpy_not_installed") from exc
-            audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
-            segments, _ = self.model.transcribe(
-                audio, language="de", beam_size=1, vad_filter=False,
-                condition_on_previous_text=False,
-            )
-            return " ".join(s.text.strip() for s in segments).strip()[:1200]
+                try:
+                    import numpy as np
+                except ImportError as exc:
+                    raise LocalVoiceUnavailable("numpy_not_installed") from exc
+                audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+                segments, _ = self.model.transcribe(
+                    audio, language="de", beam_size=1, vad_filter=False,
+                    condition_on_previous_text=False,
+                )
+                return " ".join(segment.text.strip() for segment in segments).strip()[:1200]
+            finally:
+                self._inference_slot.release()
 
         return await asyncio.to_thread(infer)
 
