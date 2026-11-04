@@ -54,6 +54,7 @@ the lifecycle of this child process.
 | `porcelainberryme_capabilities` | none | authenticated `whoami` | scoped tenant, subject, role and declared read-only tool list |
 | `porcelainberryme_active_calls` | integer `limit` 1..30 | `GET /v1/ip-calls/active` | bounded, own authorized call IDs and states |
 | `porcelainberryme_call_status` | 32-digit lowercase hexadecimal `call_id` | `GET /v1/ip-calls/<id>` | verified status of one call the token is allowed to see |
+| `porcelainberryme_call_events` | previous cursor `after`, `limit` 1..50 | `GET /v1/ip-calls/events` | bounded, ACL-filtered call events; next cursor equals the final **returned** event, preventing skipped messages |
 
 All results have a versioned JSON schema. Peer/customer identity,
 employee target, tenant directory, JWT, raw provider responses, media URL,
@@ -63,7 +64,7 @@ write or privileged AnanasMe command in this server. The existing native
 call-control and owner-harness authorization boundaries remain unchanged.
 
 Tests use a fake authenticated `CallControlClient` and a fake MCP decorator
-to assert the exact three registered tools, per-request identity checks,
+to assert the exact four registered tools, per-request identity checks,
 redacted output, cross-tenant refusal, invalid arguments and disallowed
 read-only scope escalation. They do not start an installed MCP SDK or host.
 
