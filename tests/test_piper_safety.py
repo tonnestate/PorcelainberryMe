@@ -114,6 +114,19 @@ class PiperProcessSafetyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(LocalVoiceUnavailable, "local_piper_timeout"):
             await asyncio.wait_for(adapter.synthesize("Hallo"), timeout=3)
 
+    async def test_trickling_piper_output_cannot_extend_total_deadline(self):
+        self.write_executable(
+            "import sys, time\n"
+            "sys.stdin.buffer.read()\n"
+            "for _ in range(100):\n"
+            "    sys.stdout.buffer.write(bytes([4, 0]) * 1600)\n"
+            "    sys.stdout.buffer.flush()\n"
+            "    time.sleep(0.045)\n"
+        )
+        adapter = LocalPiperVoice(str(self.binary), str(self.model), timeout=0.3)
+        with self.assertRaisesRegex(LocalVoiceUnavailable, "local_piper_timeout"):
+            await asyncio.wait_for(adapter.synthesize("Hallo"), timeout=2)
+
     async def test_cancelled_synthesis_does_not_leave_worker_running(self):
         self.write_executable(
             "import sys, time\n"
