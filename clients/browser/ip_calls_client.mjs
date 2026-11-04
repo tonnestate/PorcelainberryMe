@@ -318,6 +318,22 @@ export class IPCallClient {
     return response;
   }
 
+  async selfCallStatus(approvalId) {
+    if (typeof approvalId !== 'string' || !/^[a-f0-9]{32}$/.test(approvalId)) {
+      throw new Error('invalid_self_call_approval_id');
+    }
+    const response = await this.request(
+      'GET', '/v1/ip-calls/call-me?approval_id=' + approvalId,
+    );
+    if (response?.schema !== 'porcelainberryme.outbound-job.v1'
+        || response.approval_id !== approvalId
+        || !['APPROVED', 'QUEUED', 'DISPATCHING', 'FINISHED_UNVERIFIED',
+             'UNKNOWN', 'FAILED', 'EXPIRED', 'REVOKED'].includes(response?.state)) {
+      throw new Error('invalid_self_call_status_response');
+    }
+    return response;
+  }
+
   async revokeSelfCall(approvalId) {
     if (typeof approvalId !== 'string' || !/^[a-f0-9]{32}$/.test(approvalId)) {
       throw new Error('invalid_self_call_approval_id');
