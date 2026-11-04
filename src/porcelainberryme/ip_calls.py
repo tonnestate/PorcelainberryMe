@@ -177,6 +177,13 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
             validate_public_key(push_public_key) if push_public_key else None
         )
         with closing(self._conn()) as con:
+            # WAL lets independent reporting readers and status clients
+            # proceed while a call-state writer commits its short transaction.
+            # FULL durability protects accepted/ringing state on host crashes.
+            mode = con.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+            if mode.lower() != "wal":
+                raise RuntimeError("call_registry_wal_unavailable")
+            con.execute("PRAGMA synchronous=FULL")
             con.executescript("""
                 CREATE TABLE IF NOT EXISTS ip_calls (
                   id TEXT PRIMARY KEY, tenant TEXT NOT NULL,
@@ -1127,6 +1134,15 @@ def main():
     path = os.environ.get("PB_CALL_DB", "")
     if not path or not Path(path).is_absolute():
         parser.error("PB_CALL_DB must be an absolute path")
+    import stat
+    database = Path(path)
+    if database.is_symlink():
+        parser.error("PB_CALL_DB symlink is prohibited")
+    if database.exists():
+        info = database.stat()
+        if (not stat.S_ISREG(info.st_mode)
+                or stat.S_IMODE(info.st_mode) & 0o077):
+            parser.error("PB_CALL_DB must be a private regular file (0600)")
     os.umask(0o077)
     registry = CallRegistry(
         path, identity_secret=secret,
