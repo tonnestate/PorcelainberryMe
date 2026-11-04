@@ -62,9 +62,24 @@ not placed into the response. Merely typing an arbitrary consent reference
 is NOT verification; the host must authenticate and prove the consent first.
 No approval-creation MCP tool exists.
 
-Every new call needs a distinct approved ID. Repeated consumption of the
-same ID is idempotent, including across MCP/worker restarts. The worker
-reuses that ID as the existing call-control idempotency key.
+Every genuinely new user-authorized call needs a distinct, immutable
+consent_reference from the trusted host. Retrying the SAME reference for
+the same tenant, agent and recipient reuses the exact prior approval ID
+even if its status is now DISPATCHING, UNKNOWN or finished. Trying to
+reuse one reference for another agent/recipient in the same tenant fails
+closed. This prevents duplicate ringing after an uncertain approval
+response or a host retry.
+
+The approval ledger also enforces 64 unconsumed APPROVED/QUEUED jobs
+per tenant/agent by default and at most 10,000 retained records per
+tenant/agent. Expired approvals release pending capacity, but the
+retained ceiling requires actual retention maintenance. These values
+can be narrowed by the trusted host's DurableCallJobs constructor.
+Capacity failures do not issue fresh authorizations.
+
+Repeated consumption of the same approved ID is idempotent, including
+across MCP/worker restarts. The worker reuses that ID as the existing
+call-control idempotency key.
 
 ## Long-lived Hermes MCP process
 
