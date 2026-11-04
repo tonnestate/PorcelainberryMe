@@ -300,6 +300,8 @@ def main():
                         help="For explicitly web-only deployment without mobile alerts")
     parser.add_argument("--require-pstn", action="store_true",
                         help="List separate carrier/Asterisk acceptance gates")
+    parser.add_argument("--preflight-only", action="store_true",
+                        help="Exit 0 for configuration+runtime only, NOT production release")
     args = parser.parse_args()
     report = evaluate(
         network=args.network,
@@ -307,9 +309,15 @@ def main():
         require_pstn=args.require_pstn,
     )
     print(json.dumps(report, sort_keys=True, indent=2))
-    # A successful exit proves only static/network preflight, never release.
-    return 0 if (report["configuration_passed"]
-                 and report["runtime_checks_passed"]) else 2
+    if not (report["configuration_passed"]
+            and report["runtime_checks_passed"]):
+        return 2
+    if args.preflight_only:
+        # Explicit staging/preflight mode, not product acceptance.
+        return 0
+    # Default FAIL-CLOSED: live telephone acceptance is unverified. Never
+    # let an ordinary CI exit 0 automatically promote this to production.
+    return 0 if report["production_accepted"] else 3
 
 
 if __name__ == "__main__":
