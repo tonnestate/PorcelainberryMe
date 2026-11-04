@@ -96,6 +96,58 @@ class InboundWorkerTests(unittest.IsolatedAsyncioTestCase):
                 max_sessions=max_sessions, poll_seconds=0.1,
             )
 
+    async def test_trusted_host_can_select_per_call_fruitstack_owner_backend(self):
+        client = Control()
+        selected = []
+        owner = object()
+
+        def owner_factory(tenant, assistant, caller, call_id):
+            selected.append((tenant, assistant, caller, call_id))
+            return owner
+
+        def responder_factory(**kwargs):
+            self.assertIs(kwargs["owner_voice"], owner)
+            return SimpleNamespace(greeting="Trusted FruitStack greeting")
+
+        with patch("porcelainberryme.voice_inbound_agent.LiveKitAgentCall", Session), \
+             patch("porcelainberryme.voice_inbound_agent.make_call_responder",
+                   side_effect=responder_factory):
+            count = await serve_inbound(
+                tenant="tenantA", agent_id="assistant",
+                identity_secret=SECRET,
+                whisper_model="/local-whisper", ollama_model="local-ollama",
+                piper_binary="/local-piper", piper_model="/local-voice",
+                client=client, rtc=object(), local_resources=self.resources,
+                owner_voice_factory=owner_factory,
+                max_sessions=1, poll_seconds=0.1,
+            )
+        self.assertEqual(count, 1)
+        self.assertEqual(selected, [
+            ("tenantA", "assistant", "customer", CALL1),
+        ])
+        self.assertIn(("greeting", "Trusted FruitStack greeting"), Session.logs)
+
+    async def test_unconfigured_owner_backend_keeps_customer_voice_unprivileged(self):
+        client = Control()
+        selected = []
+
+        def owner_factory(tenant, assistant, caller, call_id):
+            selected.append((tenant, assistant, caller, call_id))
+            return None
+
+        with patch("porcelainberryme.voice_inbound_agent.LiveKitAgentCall", Session):
+            await serve_inbound(
+                tenant="tenantA", agent_id="assistant",
+                identity_secret=SECRET,
+                whisper_model="/local-whisper", ollama_model="local-ollama",
+                piper_binary="/local-piper", piper_model="/local-voice",
+                client=client, rtc=object(), local_resources=self.resources,
+                owner_voice_factory=owner_factory,
+                max_sessions=1, poll_seconds=0.1,
+            )
+        self.assertEqual(len(selected), 1)
+        self.assertIn(("responder", "SimpleNamespace"), Session.logs)
+
     async def test_human_inbound_auto_answer_and_fenced_finalization(self):
         client = Control()
         count = await self.run_worker(client)
