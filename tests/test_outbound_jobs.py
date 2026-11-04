@@ -17,11 +17,13 @@ class DurableJobTests(unittest.IsolatedAsyncioTestCase):
         self.path = Path(temp.name) / "calls.sqlite"
         self.tick = [1800000000]
         self.store = DurableCallJobs(self.path, clock=lambda: self.tick[0])
+        self.consent_sequence = 0
 
     def approve(self, ttl=120):
+        self.consent_sequence += 1
         return self.store.approve(
             tenant=TENANT, agent=AGENT, recipient=TARGET,
-            consent_reference="verified-consent-event-0001",
+            consent_reference=f"verified-consent-event-{self.consent_sequence:05d}",
             ttl_seconds=ttl,
         )
 
@@ -34,6 +36,80 @@ class DurableJobTests(unittest.IsolatedAsyncioTestCase):
         return self.store.status(
             approval_id=key, tenant=TENANT, agent=AGENT, recipient=TARGET,
         )["state"]
+
+    async def test_same_consent_reference_is_durable_idempotency_key(self):
+        key = self.store.approve(
+            tenant=TENANT, agent=AGENT, recipient=TARGET,
+            consent_reference="verified-host-intent-0001",
+        )
+        self.assertEqual(self.store.approve(
+            tenant=TENANT, agent=AGENT, recipient=TARGET,
+            consent_reference="verified-host-intent-0001",
+        ), key)
+        self.assertEqual(self.request(key)["state"], "QUEUED")
+        self.assertEqual(self.store.approve(
+            tenant=TENANT, agent=AGENT, recipient=TARGET,
+            consent_reference="verified-host-intent-0001",
+        ), key)
+        self.store.claim(tenant=TENANT, agent=AGENT)
+        self.store.finish(approval_id=key, tenant=TENANT, agent=AGENT,
+                          state="UNKNOWN")
+        # Retrying the consent operation after an uncertain call cannot
+        # manufacture a second future dial approval.
+        restarted = DurableCallJobs(self.path, clock=lambda: self.tick[0])
+        self.assertEqual(restarted.approve(
+            tenant=TENANT, agent=AGENT, recipient=TARGET,
+            consent_reference="verified-host-intent-0001",
+        ), key)
+        self.assertEqual(self.request(key)["state"], "UNKNOWN")
+        with self.assertRaisesRegex(Exception, "consent_scope_conflict"):
+            self.store.approve(
+                tenant=TENANT, agent="another_agent", recipient=TARGET,
+                consent_reference="verified-host-intent-0001",
+            )
+        with self.assertRaisesRegex(Exception, "consent_scope_conflict"):
+            self.store.approve(
+                tenant=TENANT, agent=AGENT, recipient="different_user",
+                consent_reference="verified-host-intent-0001",
+            )
+
+    async def test_pending_capacity_and_release_on_expiry(self):
+        store = DurableCallJobs(
+            self.path, clock=lambda: self.tick[0],
+            max_pending_per_agent=2, max_retained_per_agent=4,
+        )
+        for index in (1, 2):
+            store.approve(tenant=TENANT, agent=AGENT, recipient=TARGET,
+                          consent_reference=f"host-consent-{index:04d}",
+                          ttl_seconds=30)
+        with self.assertRaisesRegex(Exception, "pending_capacity_exceeded"):
+            store.approve(tenant=TENANT, agent=AGENT, recipient=TARGET,
+                          consent_reference="host-consent-0003")
+        self.tick[0] += 31
+        third = store.approve(
+            tenant=TENANT, agent=AGENT, recipient=TARGET,
+            consent_reference="host-consent-0003",
+        )
+        self.assertEqual(store.status(
+            approval_id=third, tenant=TENANT, agent=AGENT,
+            recipient=TARGET)["state"], "APPROVED")
+        store.approve(tenant=TENANT, agent=AGENT, recipient=TARGET,
+                      consent_reference="host-consent-0004")
+        with self.assertRaisesRegex(Exception, "retained_capacity_exceeded"):
+            store.approve(tenant=TENANT, agent=AGENT, recipient=TARGET,
+                          consent_reference="host-consent-0005")
+
+    async def test_retained_limit_is_mandatory_and_configured_safely(self):
+        for cap in (0, -1, 1.5, True, 1025):
+            with self.subTest(cap=cap), self.assertRaises(ValueError):
+                DurableCallJobs(
+                    self.path, max_pending_per_agent=cap,
+                )
+        with self.assertRaises(ValueError):
+            DurableCallJobs(
+                self.path, max_pending_per_agent=10,
+                max_retained_per_agent=9,
+            )
 
     async def test_restart_never_redials_ambiguous_call(self):
         key = self.approve()
