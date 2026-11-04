@@ -121,6 +121,25 @@ class PushIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(CallError, "invalid_push_keys"):
             validate_subscription(info)
 
+    def test_malformed_push_authorities_are_controlled_client_errors(self):
+        # These previously raised ValueError from urllib's .port/.hostname
+        # before the API handler could translate them into HTTP 400.
+        for endpoint in (
+            "https://fcm.googleapis.com:abc/path",
+            "https://fcm.googleapis.com:65536/path",
+            "https://[bad-ipv6/path",
+            "https://fcm.googleapis.com:-1/path",
+        ):
+            with self.subTest(endpoint=endpoint):
+                subscription = self.subscription()
+                subscription["endpoint"] = endpoint
+                with self.assertRaises(CallError) as caught:
+                    validate_subscription(subscription)
+                self.assertEqual(caught.exception.status, 400)
+                with self.assertRaises(CallError) as caught:
+                    self.db.register_push(self.human, subscription)
+                self.assertEqual(caught.exception.status, 400)
+
     def test_tenant_device_isolation_and_endpoint_ownership(self):
         self.register()
         with self.assertRaisesRegex(CallError, "push_endpoint_already_owned"):
