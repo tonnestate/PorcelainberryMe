@@ -91,6 +91,28 @@ class PiperProcessSafetyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
 
+    async def test_cancel_stream_with_backpressured_piper_pipe_reaps_process(self):
+        # Regression: after a cancellation, awaiting Process.wait() alone
+        # may deadlock while stdout PIPE still holds buffered synthesized
+        # audio. The cleanup path must drain (without ever playing) it.
+        pid_file = self.directory / "backpressure.pid"
+        self.write_executable(
+            "import os, sys, time\n"
+            f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+            "sys.stdin.buffer.read()\n"
+            "sys.stdout.buffer.write(bytes([1, 0]) * 250000)\n"
+            "sys.stdout.buffer.flush()\n"
+            "time.sleep(10)\n"
+        )
+        adapter = LocalPiperVoice(str(self.binary), str(self.model), timeout=20)
+        stream = adapter.stream_audio("Hallo")
+        first = await asyncio.wait_for(anext(stream), timeout=3)
+        self.assertGreater(len(first.pcm), 0)
+        pid = int(pid_file.read_text())
+        await asyncio.wait_for(stream.aclose(), timeout=3)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
     async def test_oversized_piper_output_is_rejected_during_read(self):
         self.write_executable(
             "import sys\n"
