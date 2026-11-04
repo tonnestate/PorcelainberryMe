@@ -230,6 +230,13 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                     "ON CONFLICT(tenant,subject) DO UPDATE SET agent_calls=excluded.agent_calls",
                     (tenant, subject, int(allow_agent_calls)),
                 )
+                if not allow_agent_calls:
+                    # A trusted operator can revoke an existing opt-in.
+                    # Revoke unanswered agent invitations in the same commit.
+                    self._revoke_pending_contact(
+                        con, tenant, subject, now=self._now(),
+                        block_all=False, block_agents=True,
+                    )
 
     def set_do_not_disturb(self, tenant: str, subject: str, enabled: bool) -> None:
         """Trusted enrollment interface. No unauthenticated HTTP mutation."""
@@ -246,6 +253,56 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                 )
                 if updated.rowcount != 1:
                     raise CallError("account_not_enrolled", 404)
+                if enabled:
+                    self._revoke_pending_contact(
+                        con, tenant, subject, now=self._now(),
+                        block_all=True, block_agents=True,
+                    )
+
+    def _revoke_pending_contact(self, con, tenant, subject, *,
+                                now, block_all, block_agents):
+        """Atomically rescind still-ringing calls and optional staff offers.
+
+        New consent preferences must take effect for INVITATIONS already
+        issued, not just future originates. Active/connected conversations
+        are deliberately not torn down by a preference update.
+        """
+        if not block_all and not block_agents:
+            return
+        pending = con.execute(
+            "SELECT * FROM ip_calls WHERE tenant=? AND callee=? "
+            "AND state='RINGING' AND (?=1 OR agent=1)",
+            (tenant, subject, int(block_all)),
+        ).fetchall()
+        for call in pending:
+            con.execute(
+                "UPDATE ip_calls SET state='DECLINED', expires_at=?, "
+                "closed_at=? WHERE id=? AND state='RINGING'",
+                (now, now, call["id"]),
+            )
+            for actor in (call["caller"], call["callee"]):
+                self._event(con, call, actor, "DECLINED", now)
+
+        if block_all:
+            offers = con.execute(
+                "SELECT c.*,h.target AS handoff_target "
+                "FROM ip_call_handoffs h JOIN ip_calls c ON c.id=h.call_id "
+                "WHERE h.tenant=? AND h.target=? AND c.state='ACTIVE' "
+                "AND h.state IN ('OFFERED','ACCEPTED')",
+                (tenant, subject),
+            ).fetchall()
+            for call in offers:
+                con.execute(
+                    "UPDATE ip_call_handoffs SET state='CANCELLED', "
+                    "expires_at=? WHERE call_id=? "
+                    "AND state IN ('OFFERED','ACCEPTED')",
+                    (now, call["id"]),
+                )
+                # If staff already obtained a media JWT, revoke their
+                # participant repeatedly until the last token expires.
+                self._schedule_handoff_kick(con, call["id"], now)
+                for actor in {call["caller"], call["callee"], subject}:
+                    self._event(con, call, actor, "HANDOFF_CANCELLED", now)
 
     def preferences(self, claims: dict) -> dict:
         """Read only the authenticated account's own consent and DND."""
@@ -290,6 +347,11 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                     "WHERE tenant=? AND subject=?",
                     (int(consent), int(dnd), claims["tenant"], claims["sub"]),
                 )
+                if dnd or not consent:
+                    self._revoke_pending_contact(
+                        con, claims["tenant"], claims["sub"], now=self._now(),
+                        block_all=dnd, block_agents=not consent,
+                    )
                 return {"allow_agent_calls": consent, "do_not_disturb": dnd}
 
     def _now(self):
