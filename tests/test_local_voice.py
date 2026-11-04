@@ -308,7 +308,7 @@ class LocalVoiceTests(unittest.IsolatedAsyncioTestCase):
             def __aiter__(self):
                 async def chunks():
                     for event in events:
-                        yield (json.dumps(event) + "\\n").encode("utf-8")
+                        yield (json.dumps(event) + "\n").encode("utf-8")
                 return chunks()
 
         class Response:
@@ -352,7 +352,7 @@ class LocalVoiceTests(unittest.IsolatedAsyncioTestCase):
                 async def chunks():
                     yield (json.dumps({
                         "done": False, "message": {"content": "Teil."},
-                    }) + "\\n").encode()
+                    }) + "\n").encode()
                 return chunks()
 
         class Response:
