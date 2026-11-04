@@ -17,6 +17,8 @@ sip = ["baresip-python==0.6.0"]
 # paid APIs or cloud accounts. Piper executable/models and Ollama are installed
 # separately by the operator only after hardware/capacity review.
 voice-local = ["livekit>=1.0,<2.0", "faster-whisper>=1.0,<2.0", "numpy>=1.24,<3.0"]
+# Optional local native VAD: no torch, model weights, paid API or new service.
+vad = ["webrtcvad-wheels>=2.0.14.post1,<3.0"]
 # Optional open-source sender. Browser vendor push endpoints remain external,
 # but no cloud AI service, telephony carrier or paid API account is required.
 web-push = ["pywebpush>=2.0,<3.0"]
