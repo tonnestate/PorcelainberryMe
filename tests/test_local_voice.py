@@ -331,7 +331,7 @@ class LocalVoiceTests(unittest.IsolatedAsyncioTestCase):
         fake_http = SimpleNamespace(
             ClientTimeout=lambda total: total,
             ClientSession=lambda timeout: Session(),
-            ClientError=RuntimeError,
+            ClientError=type("ClientError", (Exception,), {}),
         )
         with patch.dict("sys.modules", {"aiohttp": fake_http}):
             responder = LocalOllamaResponder("already-installed:7b")
@@ -351,7 +351,7 @@ class LocalVoiceTests(unittest.IsolatedAsyncioTestCase):
             def __aiter__(self):
                 async def chunks():
                     yield (json.dumps({
-                        "done": False, "message": {"content": "Teil."},
+                        "done": False, "message": {"content": "Teil. "},
                     }) + "\n").encode()
                 return chunks()
 
@@ -374,7 +374,7 @@ class LocalVoiceTests(unittest.IsolatedAsyncioTestCase):
         fake_http = SimpleNamespace(
             ClientTimeout=lambda total: total,
             ClientSession=lambda timeout: Session(),
-            ClientError=RuntimeError,
+            ClientError=type("ClientError", (Exception,), {}),
         )
         with patch.dict("sys.modules", {"aiohttp": fake_http}):
             stream = LocalOllamaResponder("local:qwen").stream_sentences("Hallo", [])
