@@ -90,8 +90,14 @@ The dedicated `porcelainberryme-asterisk-stasis` worker now connects to
 the authenticated loopback ARI `/ari/events` WebSocket itself, and matches
 only the **exact configured Stasis app + dialplan context + extension**.
 Before creating any media resources, it re-reads the original channel via
-authenticated ARI GET and verifies the same route. It rejects other
-apps, contexts, dialplan extensions and duplicated StasisStart events.
+authenticated ARI GET, verifies the same route, and explicitly answers
+a trusted caller still ringing. It rejects other apps, contexts, dialplan
+extensions and duplicated StasisStart events. After normal media completion
+or a voice failure it verifies the original caller again and returns it
+to the next dialplan step using `/channels/{id}/continue`. `StasisEnd`
+cancels the owned audio worker immediately; capacity-excess calls are
+returned to the dialplan without answering, with a bounded return task
+queue. The listener never force-hangs up another call.
 A caller ID or a phone number is not a credential, and this route is
 not an authorization for private FruitStack owner commands.
 
@@ -177,7 +183,18 @@ the intended dialplan routing, SIP-trunk connectivity (when PSTN is
 required), call audio in both directions, ring/hangup behavior, memory
 capacity, privacy, and recovery on the actual Asterisk host.
 
-The release gate, when invoked with `--network --require-pstn`, now
-checks the configured fixed Stasis route and uses authenticated
-`GET /ari/asterisk/info` on 127.0.0.1. Passing that HTTP check means
-the API responds, **not** that a carrier or real call works.
+The release gate, when invoked with `--network --require-pstn`, checks
+the configured fixed Stasis route and uses authenticated
+`GET /ari/asterisk/info` **and**
+`GET /ari/applications/<configured-app>` on 127.0.0.1.
+Passing those HTTP checks confirms the ARI API and Stasis application
+are visible, **not** that a carrier or real call works.
+
+The CI test `tests/test_asterisk_stasis_e2e.py` covers, with actual
+loopback HTTP/WebSocket transport and synthetic installed-model
+substitutes, the complete authorized
+`StasisStart -> answer -> mixing bridge -> externalMedia -> PCM -> STT
+-> LLM -> TTS -> MARK_MEDIA acknowledgement -> cleanup -> continue`
+lifecycle. Further tests cover replay, overload, hangup and denial.
+This is strong source-level evidence but cannot validate an external
+SIP carrier or an actual Asterisk installation.
