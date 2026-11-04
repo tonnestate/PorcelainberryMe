@@ -215,6 +215,12 @@ class ConsentedNotesResponder:
         self.greeting = getattr(responder, "greeting", "Guten Tag. Wie kann ich Ihnen helfen?")
         self.consented = False
         self.start_index: int | None = None
+        # VoiceTurnEngine holds only the last six user/assistant turns.
+        # Track strictly post-consent, *audibly delivered* user turns
+        # independently, or consent given late in a call would save nothing.
+        self._delivery_tracking_started = False
+        self._delivered_consent = False
+        self._delivered_utterances: list[str] = []
 
     async def respond(self, text: str, history: list[dict]) -> str:
         command = normalize_spoken(text)
@@ -226,14 +232,51 @@ class ConsentedNotesResponder:
         if command == REVOKE:
             self.consented = False
             self.start_index = None
+            self._delivered_consent = False
+            self._delivered_utterances.clear()
             return "Verstanden. Ich speichere keine Gesprächsnotiz."
         return await self.responder.respond(text, history)
+
+    def on_turn_delivered(self, utterance: str, response: str) -> None:
+        """Called only when a user turn's spoken reply was actually played.
+
+        Consent to store notes is not inferred from a TTS reply that failed
+        or was interrupted. Other utterances are retained only after that
+        explicit spoken consent, bounded by MAX_EXCERPTS.
+        """
+        self._delivery_tracking_started = True
+        command = normalize_spoken(utterance)
+        if command == CONSENT:
+            self._delivered_consent = True
+            self._delivered_utterances.clear()
+        elif command == REVOKE:
+            self._delivered_consent = False
+            self._delivered_utterances.clear()
+        elif (self._delivered_consent and self.consented
+              and len(self._delivered_utterances) < MAX_EXCERPTS):
+            statement = " ".join(utterance.strip().split())[:EXCERPT_CHARS]
+            if statement and statement not in self._delivered_utterances:
+                self._delivered_utterances.append(statement)
 
     async def persist_if_consented(self, call_id: str,
                                   history: list[dict]) -> bool:
         if not self.consented or self.start_index is None:
             return False
-        minimal = build_minimal_note(history[self.start_index:])
+        if self._delivery_tracking_started:
+            # In a real voice call this callback is authoritative. The
+            # rolling conversation history cannot reveal where consent
+            # began after old turns have been truncated.
+            if not self._delivered_consent:
+                return False
+            eligible = [
+                {"role": "user", "content": phrase}
+                for phrase in self._delivered_utterances
+            ]
+            minimal = build_minimal_note(eligible)
+        else:
+            # Support trusted offline/legacy integrations which supply a
+            # full explicit history but do not provide delivery callbacks.
+            minimal = build_minimal_note(history[self.start_index:])
         if minimal is None:
             return False
         text, number = minimal
