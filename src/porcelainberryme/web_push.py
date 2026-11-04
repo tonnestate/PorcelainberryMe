@@ -63,10 +63,17 @@ def validate_subscription(subscription):
         raise CallError("invalid_push_device")
     if not isinstance(endpoint, str) or not 20 <= len(endpoint) <= MAX_PUSH_ENDPOINT:
         raise CallError("invalid_push_endpoint")
-    parsed = urlsplit(endpoint)
-    host = (parsed.hostname or "").lower()
+    # urlsplit(), hostname and port can raise ValueError for malformed
+    # bracketed IPv6 authorities or out-of-range/non-numeric ports.
+    # Registration is untrusted input: map these to a controlled 400.
+    try:
+        parsed = urlsplit(endpoint)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError as exc:
+        raise CallError("invalid_push_endpoint") from exc
     if (parsed.scheme != "https" or parsed.username or parsed.password
-            or parsed.port not in (None, 443) or parsed.fragment or not parsed.path
+            or port not in (None, 443) or parsed.fragment or not parsed.path
             or host not in PUSH_EXACT_HOSTS
             and not any(host.endswith(suffix) for suffix in PUSH_HOST_SUFFIXES)):
         # Avoid SSRF: we only transmit to established browser push-service
