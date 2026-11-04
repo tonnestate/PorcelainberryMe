@@ -147,7 +147,21 @@ class AsteriskStasisListener:
                     print("asterisk_stasis_return_unconfirmed", file=sys.stderr)
 
     def accept_event(self, event: dict) -> bool:
-        """Immediate event admission; never await a remote action in here."""
+        """Bounded call admission and immediate peer-hangup cancellation.
+
+        StasisEnd is authoritative only for an already owned channel in
+        this subscribed application; it cannot redirect unrelated calls.
+        """
+        if (isinstance(event, dict)
+                and event.get("type") == "StasisEnd"
+                and event.get("application") == self.route.app):
+            ended = event.get("channel")
+            channel_id = ended.get("id") if isinstance(ended, dict) else None
+            task = self._calls.get(channel_id) if isinstance(channel_id, str) else None
+            if task is not None and not task.done():
+                task.cancel()
+                return True
+            return False
         channel_id = self.route.inbound_channel(event)
         if channel_id is None:
             return False
