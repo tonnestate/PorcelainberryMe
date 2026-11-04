@@ -47,6 +47,50 @@ class PiperProcessSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(packet.sample_rate, 16000)
         self.assertEqual(packet.pcm, bytes([4, 0]) * 320)
 
+    async def test_progressive_piper_emits_pcm_before_child_finishes(self):
+        completed = self.directory / "finished.txt"
+        self.write_executable(
+            "import sys, time\n"
+            "sys.stdin.buffer.read()\n"
+            "sys.stdout.buffer.write(bytes([4, 0]) * 1600)\n"
+            "sys.stdout.buffer.flush()\n"
+            "time.sleep(0.25)\n"
+            "sys.stdout.buffer.write(bytes([5, 0]) * 1600)\n"
+            "sys.stdout.buffer.flush()\n"
+            f"open({str(completed)!r}, 'w').write('finished')\n"
+        )
+        with patch.dict(os.environ, {"PB_LOCAL_PIPER_STREAM": "1"}):
+            adapter = LocalPiperVoice(str(self.binary), str(self.model), timeout=3)
+            self.assertTrue(adapter.streaming_enabled)
+            stream = adapter.stream_audio("Hallo")
+            first = await asyncio.wait_for(anext(stream), timeout=2)
+            self.assertEqual(first.pcm, bytes([4, 0]) * 1600)
+            self.assertFalse(completed.exists())
+            second = await asyncio.wait_for(anext(stream), timeout=2)
+            self.assertEqual(second.pcm, bytes([5, 0]) * 1600)
+            with self.assertRaises(StopAsyncIteration):
+                await anext(stream)
+            self.assertTrue(completed.exists())
+
+    async def test_closing_partial_piper_stream_kills_native_process(self):
+        pid_file = self.directory / "speech.pid"
+        self.write_executable(
+            "import os, sys, time\n"
+            f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+            "sys.stdin.buffer.read()\n"
+            "sys.stdout.buffer.write(bytes([4, 0]) * 1600)\n"
+            "sys.stdout.buffer.flush()\n"
+            "time.sleep(10)\n"
+        )
+        adapter = LocalPiperVoice(str(self.binary), str(self.model), timeout=3)
+        stream = adapter.stream_audio("Hallo")
+        first = await asyncio.wait_for(anext(stream), timeout=2)
+        self.assertEqual(len(first.pcm), 3200)
+        pid = int(pid_file.read_text())
+        await asyncio.wait_for(stream.aclose(), timeout=2)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
     async def test_oversized_piper_output_is_rejected_during_read(self):
         self.write_executable(
             "import sys\n"
