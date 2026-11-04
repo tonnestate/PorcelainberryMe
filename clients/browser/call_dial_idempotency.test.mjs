@@ -73,7 +73,7 @@ test('PWA reload recovers a timed-out request ID without storing any bearer', as
   assert.equal(await old.dial('bob'), false);
   const saved = JSON.stringify(store.entries());
   assert.doesNotMatch(saved, /token|bearer|secret/i);
-  assert.match(saved, /"recipient":"bob"/);
+  assert.equal(JSON.parse(store.entries()[0]).recipient, 'bob');
   await old.destroy();
   const restored = await controller(fakeClient(dial), store);
   assert.equal(await restored.dial('bob'), true);
