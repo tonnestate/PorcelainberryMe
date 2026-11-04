@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import re
+import signal
 import sys
 from collections import deque
 
@@ -298,6 +299,32 @@ class AsteriskStasisListener:
             await self.close()
 
 
+async def serve_with_signals(listener: AsteriskStasisListener) -> None:
+    """Drain media sessions on systemd SIGTERM, not abrupt process death.
+
+    Never expose a network shutdown endpoint. The existing listener owns
+    only its own ARI channels and finishes them through its normal cleanup
+    and trusted dialplan handoff. Windows event loops without signal
+    support keep their standard KeyboardInterrupt handling.
+    """
+    if not isinstance(listener, AsteriskStasisListener):
+        raise TypeError("trusted_stasis_listener_required")
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    registered = []
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(signum, stop.set)
+            registered.append(signum)
+        except (NotImplementedError, RuntimeError):
+            pass
+    try:
+        await listener.serve(stop_event=stop)
+    finally:
+        for signum in registered:
+            loop.remove_signal_handler(signum)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Host-only Asterisk Stasis voice route listener",
@@ -344,7 +371,7 @@ def main():
     except (ValueError, TypeError) as exc:
         parser.error(str(exc))
     try:
-        asyncio.run(listener.serve())
+        asyncio.run(serve_with_signals(listener))
     except KeyboardInterrupt:
         pass
 
