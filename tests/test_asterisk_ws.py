@@ -151,6 +151,28 @@ class AsteriskBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session.started)
         await session.engine.close()
 
+    async def test_flush_network_error_fails_closed_before_next_audio(self):
+        class BrokenWS(FakeWS):
+            async def send_json(self, payload):
+                if payload["command"] == "FLUSH_MEDIA":
+                    # Non-OSError errors also occur in real aiohttp transports.
+                    raise ValueError("socket_control_frame_unavailable")
+                await super().send_json(payload)
+
+        ws = BrokenWS()
+        speaker = AsteriskPcmSpeaker(ws, mark_timeout=1)
+        speaker.ready = True
+        speaker.interrupt()
+        # Drain the failed asynchronous FLUSH, including its callback.
+        await asyncio.gather(*tuple(speaker._flush_tasks),
+                             return_exceptions=True)
+        await asyncio.sleep(0)
+        self.assertTrue(speaker._flush_failed)
+        with self.assertRaisesRegex(AsteriskMediaError, "flush_unverified"):
+            await speaker.play(AudioPacket(FRAME, 16000))
+        self.assertFalse(any(isinstance(item, bytes) for item in ws.outbound))
+        await speaker.aclose()
+
     async def test_backpressure_interrupt_and_asterisk_flush(self):
         ws = FakeWS(auto_mark=False)
         speaker = AsteriskPcmSpeaker(ws, mark_timeout=1)
