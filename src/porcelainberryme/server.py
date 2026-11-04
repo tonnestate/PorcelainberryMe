@@ -16,6 +16,7 @@ import time
 
 from .contracts import InboundEvent
 from .ledger import IdempotencyConflict, Ledger
+from .whatsapp_mirror import OwnerWhatsAppMirror
 
 MAX_BODY = 65536
 SKEW_SECONDS = 300
@@ -42,7 +43,8 @@ def authenticated(secret: str, timestamp: str, supplied: str, payload: bytes,
         return False
 
 
-def handler_for(ledger: Ledger, *, secret: str):
+def handler_for(ledger: Ledger, *, secret: str,
+                mirror: OwnerWhatsAppMirror | None = None):
     if not isinstance(secret, str) or len(secret) < 32:
         raise ValueError("signing_secret_too_short")
 
@@ -62,7 +64,8 @@ def handler_for(ledger: Ledger, *, secret: str):
                 self._reply(404, {"error": "not_found"})
 
         def do_POST(self):
-            if self.path != "/v1/inbound":
+            is_mirror = self.path == "/v1/owner-whatsapp-mirror"
+            if self.path != "/v1/inbound" and not (is_mirror and mirror is not None):
                 self._reply(404, {"error": "not_found"})
                 return
             try:
@@ -80,7 +83,10 @@ def handler_for(ledger: Ledger, *, secret: str):
                 return
             try:
                 event = InboundEvent.from_dict(json.loads(payload))
-                outcome = ledger.ingest(event)
+                outcome = mirror.ingest(event) if is_mirror else ledger.ingest(event)
+            except PermissionError:
+                self._reply(403, {"error": "whatsapp_owner_scope_rejected"})
+                return
             except OverflowError:
                 self._reply(507, {"error": "inbound_capacity_exceeded"})
                 return
@@ -105,8 +111,21 @@ def main():
     if len(secret) < 32 or not path or not Path(path).is_absolute():
         raise SystemExit("Configure a long signing secret and absolute DB path")
     ledger = Ledger(path)
-    # Inbound-only processes must not modify another sender process state.
-    server = ThreadingHTTPServer(("127.0.0.1", 8873), handler_for(ledger, secret=secret))
+    mirror = None
+    enabled = os.environ.get("PB_WHATSAPP_MIRROR_ENABLED", "0")
+    if enabled not in ("0", "1"):
+        raise SystemExit("Invalid WhatsApp mirror enable flag")
+    if enabled == "1":
+        mirror = OwnerWhatsAppMirror(
+            path,
+            tenant=os.environ.get("PB_WHATSAPP_MIRROR_TENANT", ""),
+            owner_destination=os.environ.get("PB_WHATSAPP_MIRROR_DESTINATION", ""),
+        )
+    # The same private loopback service handles signed observer events.
+    # Mirrored WhatsApp messages never enter the actionable inbound queue.
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 8873), handler_for(ledger, secret=secret, mirror=mirror),
+    )
     try:
         server.serve_forever()
     finally:
