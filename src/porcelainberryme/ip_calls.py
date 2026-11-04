@@ -241,6 +241,16 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                 "CREATE INDEX IF NOT EXISTS ip_call_reporting_scope "
                 "ON ip_calls(tenant,created_at,caller,callee)"
             )
+            # Each participant predicate needs its own leftmost index;
+            # a shared tenant/date index scans unrelated call volume.
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS ip_call_reporting_caller "
+                "ON ip_calls(tenant,caller,created_at)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS ip_call_reporting_callee "
+                "ON ip_calls(tenant,callee,created_at)"
+            )
             con.commit()
 
     def _conn(self):
