@@ -24,6 +24,12 @@ speech/media infrastructure.
 - Official WhatsApp Business Cloud text adapter (opt-in).
 - **Existing TonnEstate/Aurora WhatsApp adapter:** delegates through the
   owner-scoped `127.0.0.1:5001/api/internal/v1/aurora/send` API; no new WhatsApp process.
+- **Opt-in owner WhatsApp MCP:** three host-scoped tools read already
+  authenticated local WhatsApp events and submit only *exactly preapproved*
+  messages via the existing TonnEstate/Aurora personal account. No second
+  WhatsApp login, automatic resend or arbitrary model-selected recipient.
+  This source integration is not yet a live VPS/ChatGPT account connection.
+  See [owner WhatsApp MCP](docs/WHATSAPP_MCP.md).
 - **Existing Piper voice adapter:** uses explicit local executable and ONNX
   file + config already present on disk; no model download or bundled voice.
 - **AnanasMe native harness integration:** verified owner-originated messages
