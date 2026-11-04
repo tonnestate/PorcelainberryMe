@@ -60,6 +60,14 @@ class InboundAgentMixin:
                     "DO UPDATE SET enabled=excluded.enabled",
                     (tenant, assistant, int(enabled)),
                 )
+                if not enabled:
+                    # Withdrawal must cancel already ringing customers too.
+                    # Established active sessions remain under their lease
+                    # and are handled by their normal media lifecycle.
+                    self._revoke_pending_contact(
+                        db, tenant, assistant, now=self._now(),
+                        block_all=True, block_agents=True,
+                    )
 
     def _check_inbound(self, db, claims, call, *, require_enabled=True):
         from .ip_calls import CallError
