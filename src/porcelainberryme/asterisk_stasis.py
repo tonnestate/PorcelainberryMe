@@ -18,6 +18,7 @@ import sys
 from collections import deque
 
 from .asterisk_ari import AsteriskARI, serve_authorized_ari_call
+from .voice_livekit_agent import prepare_local_voice
 
 _ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _CONTEXT = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -99,6 +100,11 @@ class AsteriskStasisListener:
         # An acknowledged /continue itself produces StasisEnd. Do not
         # cancel the task carrying that HTTP result or release may be lost.
         self._returning: set[str] = set()
+        # A single subscribed channel can safely reuse one locally loaded
+        # STT/LLM/TTS set, avoiding cold-start after each incoming ring.
+        # Multi-call hosts retain per-call resources to prevent shared model
+        # state from leaking between simultaneously active conversations.
+        self._prepared_resources = None
         self._seen: deque[str] = deque(maxlen=4096)
         self.dispatched = 0
         self.rejected = 0
@@ -159,6 +165,18 @@ class AsteriskStasisListener:
                 print("asterisk_stasis_overload_return_failed",
                       file=sys.stderr)
 
+    async def _prepare_resources_once(self):
+        """Fail before subscribing or ringing if local voice is unavailable.
+
+        Default max_calls=1: load once, then reuse sequentially. The
+        explicit multi-call mode continues using isolated per-call models.
+        """
+        if self.max_calls == 1 and self._prepared_resources is None:
+            self._prepared_resources = await prepare_local_voice(
+                tenant=self.tenant, agent_id=self.assistant,
+                **self.voice_settings,
+            )
+
     async def _serve_one(self, channel_id):
         try:
             import aiohttp
@@ -174,6 +192,8 @@ class AsteriskStasisListener:
                     authorize_channel=lambda channel: self.route.allows(
                         channel, expected_id=channel_id),
                     tenant=self.tenant, agent_id=self.assistant,
+                    local_resources=self._prepared_resources
+                    if self.max_calls == 1 else None,
                     **self.voice_settings,
                 )
             finally:
@@ -249,6 +269,12 @@ class AsteriskStasisListener:
         except ImportError as exc:
             raise StasisListenerError("asterisk_aiohttp_not_installed") from exc
         stop = stop_event if stop_event is not None else asyncio.Event()
+        if stop.is_set():
+            return
+        # Preflight once before the Stasis websocket can admit calls.
+        await self._prepare_resources_once()
+        if stop.is_set():
+            return
         url = f"ws://127.0.0.1:{self.ari.port}/ari/events"
         auth = aiohttp.BasicAuth(self.ari.user, self.ari.password)
         try:
