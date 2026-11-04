@@ -8,6 +8,7 @@ never accept a token/tenant/subject from the LLM or expose raw payloads.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import json
 import os
 import re
@@ -30,7 +31,9 @@ class MCPCallVisibility:
     """
 
     def __init__(self, control: CallControlClient, *, tenant: str,
-                 subject: str, role: str):
+                 subject: str, role: str, call_target: str = "",
+                 call_request_id: str = "",
+                 voice_launcher: Callable[[], Awaitable[None]] | None = None):
         if not isinstance(tenant, str) or not _SUBJECT.fullmatch(tenant):
             raise ValueError("mcp_trusted_tenant_required")
         if not isinstance(subject, str) or not _SUBJECT.fullmatch(subject):
@@ -39,8 +42,20 @@ class MCPCallVisibility:
             raise ValueError("mcp_trusted_role_required")
         if not isinstance(control, CallControlClient):
             raise ValueError("mcp_authenticated_call_client_required")
+        if voice_launcher is not None:
+            if role != "agent":
+                raise PermissionError("mcp_voice_job_agent_identity_required")
+            if (not callable(voice_launcher)
+                    or not _SUBJECT.fullmatch(call_target) or call_target == subject
+                    or not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", call_request_id)):
+                raise ValueError("mcp_host_approved_voice_job_required")
+        elif call_target or call_request_id:
+            raise ValueError("mcp_outbound_voice_job_not_authorized")
         self._control = control
         self._scope = {"tenant": tenant, "subject": subject, "role": role}
+        self._voice_launcher = voice_launcher
+        self._call_request_id = call_request_id
+        self._launch_task: asyncio.Task | None = None
 
     async def _verify_identity(self):
         identity = await self._control.whoami()
@@ -70,19 +85,70 @@ class MCPCallVisibility:
                 view["handoff_state"] = handoff_state
         return view
 
+    @property
+    def can_place_calls(self) -> bool:
+        return self._voice_launcher is not None
+
+    def _job_state(self) -> str:
+        task = self._launch_task
+        if task is None:
+            return "NOT_REQUESTED"
+        if not task.done():
+            return "IN_PROGRESS"
+        if task.cancelled():
+            return "CANCELLED"
+        if task.exception() is not None:
+            return "FAILED"
+        # Worker exit can also mean declined or unanswered; not delivery proof.
+        return "FINISHED_UNVERIFIED"
+
+    async def call_me(self) -> dict:
+        """Start exactly one host-approved real voice worker; never accept a target from the LLM."""
+        if not self.can_place_calls:
+            raise PermissionError("mcp_outbound_voice_job_not_authorized")
+        await self._verify_identity()
+        if self._launch_task is None:
+            task = asyncio.create_task(self._voice_launcher())
+            # Consume errors without putting credentials or transcripts in logs.
+            task.add_done_callback(
+                lambda finished: None if finished.cancelled() else finished.exception()
+            )
+            self._launch_task = task
+        return {
+            "schema": "porcelainberryme.mcp.voice-job.v1",
+            "request_id": self._call_request_id,
+            "state": self._job_state(),
+            "call_result_verified": False,
+        }
+
+    async def call_me_status(self) -> dict:
+        if not self.can_place_calls:
+            raise PermissionError("mcp_outbound_voice_job_not_authorized")
+        await self._verify_identity()
+        return {
+            "schema": "porcelainberryme.mcp.voice-job.v1",
+            "request_id": self._call_request_id,
+            "state": self._job_state(),
+            "call_result_verified": False,
+        }
+
     async def capabilities(self) -> dict:
         await self._verify_identity()
+        tools = ["porcelainberryme_capabilities",
+                 "porcelainberryme_active_calls",
+                 "porcelainberryme_call_status",
+                 "porcelainberryme_call_events"]
+        if self.can_place_calls:
+            tools += ["porcelainberryme_call_me",
+                      "porcelainberryme_call_me_status"]
         return {
             "schema": "porcelainberryme.mcp.capabilities.v1",
             "tenant": self._scope["tenant"],
             "subject": self._scope["subject"],
             "role": self._scope["role"],
             "transport": "internet_webrtc",
-            "read_only": True,
-            "tools": ["porcelainberryme_capabilities",
-                      "porcelainberryme_active_calls",
-                      "porcelainberryme_call_status",
-                      "porcelainberryme_call_events"],
+            "read_only": not self.can_place_calls,
+            "tools": tools,
         }
 
     async def active_calls(self, limit: int = 20) -> dict:
@@ -182,6 +248,17 @@ def build_server(visibility: MCPCallVisibility):
         """Read one already-authorized Internet call without call media."""
         return json.dumps(await visibility.call_status(call_id), ensure_ascii=False)
 
+    if visibility.can_place_calls:
+        @mcp.tool()
+        async def porcelainberryme_call_me() -> str:
+            """Start one host-approved Internet voice worker; no destination argument."""
+            return json.dumps(await visibility.call_me(), ensure_ascii=False)
+
+        @mcp.tool()
+        async def porcelainberryme_call_me_status() -> str:
+            """Check actual worker state; exit is not evidence of a conversation."""
+            return json.dumps(await visibility.call_me_status(), ensure_ascii=False)
+
     return mcp
 
 
@@ -194,8 +271,39 @@ def main() -> None:
     token = os.environ.get("PB_MCP_CALL_TOKEN", "")
     if len(token) < 32:
         raise ValueError("mcp_host_scoped_call_token_required")
+    voice_options = {}
+    enabled = os.environ.get("PB_MCP_CALL_ME_ENABLED", "")
+    if enabled not in ("", "0", "1"):
+        raise ValueError("mcp_voice_job_enable_flag_invalid")
+    if enabled == "1":
+        if role != "agent":
+            raise PermissionError("mcp_voice_job_agent_identity_required")
+        target = os.environ.get("PB_MCP_CALL_ME_TARGET", "")
+        request_id = os.environ.get("PB_MCP_CALL_ME_REQUEST_ID", "")
+        settings = {
+            "whisper_model": os.environ.get("PB_LOCAL_WHISPER_DIR", ""),
+            "ollama_model": os.environ.get("PB_LOCAL_OLLAMA_MODEL", ""),
+            "piper_binary": os.environ.get("PB_LOCAL_PIPER_BIN", ""),
+            "piper_model": os.environ.get("PB_LOCAL_PIPER_MODEL", ""),
+        }
+        if (any(not settings[key] for key in
+                ("whisper_model", "piper_binary", "piper_model"))
+                or not (settings["ollama_model"] or
+                        os.environ.get("PB_AGENT_KNOWLEDGE_DB", ""))):
+            raise ValueError("mcp_approved_local_voice_runtime_required")
+        from .voice_livekit_agent import call_human
+        async def start_verified_call() -> None:
+            await call_human(target=target, tenant=tenant, agent_id=subject,
+                             control_token=token, request_id=request_id,
+                             **settings)
+        voice_options = {
+            "call_target": target,
+            "call_request_id": request_id,
+            "voice_launcher": start_verified_call,
+        }
     visibility = MCPCallVisibility(
         CallControlClient(token), tenant=tenant, subject=subject, role=role,
+        **voice_options,
     )
     # Actual identity is verified on every async tool invocation, not
     # assumed from the environment or an MCP-provided argument.
