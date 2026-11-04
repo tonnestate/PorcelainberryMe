@@ -76,13 +76,15 @@ class AsteriskStasisListener:
 
     def __init__(self, *, ari: AsteriskARI, route: TrustedStasisRoute,
                  tenant: str, assistant: str, voice_settings: dict,
-                 max_calls: int = 1):
+                 max_calls: int = 1, max_busy_pending: int = 32):
         if not isinstance(ari, AsteriskARI):
             raise TypeError("trusted_asterisk_ari_required")
         if not isinstance(route, TrustedStasisRoute):
             raise TypeError("trusted_stasis_route_required")
         if type(max_calls) is not int or not 1 <= max_calls <= 4:
             raise ValueError("stasis_max_calls_out_of_range")
+        if type(max_busy_pending) is not int or not 1 <= max_busy_pending <= 256:
+            raise ValueError("stasis_busy_queue_limit_invalid")
         if not isinstance(tenant, str) or not _ID.fullmatch(tenant):
             raise ValueError("stasis_trusted_tenant_required")
         if not isinstance(assistant, str) or not _ID.fullmatch(assistant):
@@ -95,8 +97,11 @@ class AsteriskStasisListener:
         self.tenant, self.assistant = tenant, assistant
         self.voice_settings = dict(voice_settings)
         self.max_calls = max_calls
+        self.max_busy_pending = max_busy_pending
         self._calls: dict[str, asyncio.Task] = {}
         self._busy_returns: dict[str, asyncio.Task] = {}
+        self._busy_pending: deque[str] = deque()
+        self._closing = False
         # An acknowledged /continue itself produces StasisEnd. Do not
         # cancel the task carrying that HTTP result or release may be lost.
         self._returning: set[str] = set()
@@ -109,6 +114,7 @@ class AsteriskStasisListener:
         self.dispatched = 0
         self.rejected = 0
         self.failed = 0
+        self.overload_exhausted = 0
 
     def _finished(self, channel_id, task):
         self._calls.pop(channel_id, None)
@@ -148,22 +154,38 @@ class AsteriskStasisListener:
             self._returning.discard(channel_id)
 
     async def _reject_busy(self, channel_id):
-        """Release only an independently reverified capacity-excess call."""
+        """Return a denied channel promptly; never block a backlog forever."""
         try:
             import aiohttp
         except ImportError as exc:
             raise StasisListenerError("asterisk_aiohttp_not_installed") from exc
-        async with aiohttp.ClientSession() as session:
-            await self._return_caller(session, channel_id)
+        async with asyncio.timeout(3):
+            async with aiohttp.ClientSession() as session:
+                await self._return_caller(session, channel_id)
+
+    def _pump_busy_returns(self):
+        # Four ARI cleanup requests at a time; all remaining distinct
+        # channels wait in a bounded FIFO rather than being abandoned at
+        # the fifth simultaneous overload event.
+        while self._busy_pending and len(self._busy_returns) < 4:
+            channel_id = self._busy_pending.popleft()
+            task = asyncio.create_task(self._reject_busy(channel_id))
+            self._busy_returns[channel_id] = task
+            task.add_done_callback(
+                lambda finished, key=channel_id:
+                self._busy_return_finished(key, finished),
+            )
 
     def _busy_return_finished(self, channel_id, task):
-        self._busy_returns.pop(channel_id, None)
+        if self._busy_returns.get(channel_id) is task:
+            self._busy_returns.pop(channel_id, None)
         if not task.cancelled():
             try:
                 task.result()
             except Exception:
                 print("asterisk_stasis_overload_return_failed",
                       file=sys.stderr)
+        self._pump_busy_returns()
 
     async def _prepare_resources_once(self):
         """Fail before subscribing or ringing if local voice is unavailable.
@@ -207,6 +229,8 @@ class AsteriskStasisListener:
         StasisEnd is authoritative only for an already owned channel in
         this subscribed application; it cannot redirect unrelated calls.
         """
+        if self._closing:
+            return False
         if (isinstance(event, dict)
                 and event.get("type") == "StasisEnd"
                 and event.get("application") == self.route.app):
@@ -217,6 +241,9 @@ class AsteriskStasisListener:
             # Cancelling here can corrupt the cleanup completion receipt.
             if isinstance(channel_id, str) and channel_id in self._returning:
                 return False
+            if isinstance(channel_id, str) and channel_id in self._busy_pending:
+                self._busy_pending.remove(channel_id)
+                return True
             task = self._calls.get(channel_id) if isinstance(channel_id, str) else None
             if task is None and isinstance(channel_id, str):
                 task = self._busy_returns.get(channel_id)
@@ -233,15 +260,17 @@ class AsteriskStasisListener:
         self._seen.append(channel_id)
         if len(self._calls) >= self.max_calls:
             self.rejected += 1
-            # Never answer or bridge an overload call. Release it via the
-            # verified dialplan continuation, which can reject/fallback.
-            # Bound cleanup tasks too, so a flood cannot exhaust the host.
-            if len(self._busy_returns) < 4:
-                task = asyncio.create_task(self._reject_busy(channel_id))
-                self._busy_returns[channel_id] = task
-                task.add_done_callback(
-                    lambda done: self._busy_return_finished(channel_id, done),
-                )
+            # Preserve a bounded backlog: a burst of StasisStart events
+            # must not leave every call after the first four stranded.
+            # Actual Asterisk ingress must separately enforce a channel
+            # ceiling at or below this host's verified capacity.
+            if len(self._busy_pending) < self.max_busy_pending:
+                self._busy_pending.append(channel_id)
+                self._pump_busy_returns()
+            else:
+                self.overload_exhausted += 1
+                print("asterisk_stasis_ingress_capacity_exceeded",
+                      file=sys.stderr)
             return False
         task = asyncio.create_task(self._serve_one(channel_id))
         self._calls[channel_id] = task
@@ -252,11 +281,20 @@ class AsteriskStasisListener:
         return True
 
     async def close(self):
-        tasks = tuple(self._calls.values()) + tuple(self._busy_returns.values())
-        for task in tasks:
+        self._closing = True
+        # Stop media immediately. Already admitted overload calls need
+        # their verified dialplan return, not abrupt task cancellation.
+        calls = tuple(self._calls.values())
+        for task in calls:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if calls:
+            await asyncio.gather(*calls, return_exceptions=True)
+        while self._busy_returns or self._busy_pending:
+            self._pump_busy_returns()
+            pending = tuple(self._busy_returns.values())
+            if not pending:
+                break
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def serve(self, *, stop_event: asyncio.Event | None = None):
         """Connect only to local ARI. Reconnect without replaying events.
@@ -382,6 +420,9 @@ def main():
     try:
         port = int(os.environ.get("PB_ASTERISK_ARI_PORT", "8088"))
         max_calls = int(os.environ.get("PB_ASTERISK_MAX_CALLS", "1"))
+        max_busy_pending = int(os.environ.get(
+            "PB_ASTERISK_MAX_BUSY_PENDING", "32",
+        ))
         ari = AsteriskARI(user=keys["user"], password=keys["password"], port=port)
         route = TrustedStasisRoute(
             app=keys["app"], context=keys["context"], extension=keys["extension"],
@@ -392,7 +433,7 @@ def main():
             voice_settings={k: keys[k] for k in (
                 "whisper_model", "ollama_model", "piper_binary", "piper_model",
             )},
-            max_calls=max_calls,
+            max_calls=max_calls, max_busy_pending=max_busy_pending,
         )
     except (ValueError, TypeError) as exc:
         parser.error(str(exc))
