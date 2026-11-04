@@ -243,6 +243,31 @@ export class IPCallClient {
       room.on(livekit?.RoomEvent?.TrackSubscribed || 'trackSubscribed', (track) => {
         if (track?.kind === 'audio') this.onRemoteAudio(track);
       });
+      const reportMedia = kind => {
+        if (this.room !== room || this.callId !== callId) return;
+        // Media events are advisory and never authorize microphone access,
+        // token issuance or a new call. The host decides whether to reconnect.
+        Promise.resolve().then(() => this.onCallEvent({
+          kind, call: { id: callId },
+        })).catch(() => {});
+      };
+      room.on(livekit?.RoomEvent?.Reconnecting || 'reconnecting', () => {
+        reportMedia('MEDIA_RECONNECTING');
+      });
+      room.on(livekit?.RoomEvent?.Reconnected || 'reconnected', () => {
+        reportMedia('MEDIA_RECONNECTED');
+      });
+      room.on(livekit?.RoomEvent?.Disconnected || 'disconnected', () => {
+        if (this.room !== room || this.callId !== callId) return;
+        // Release the failed media instance. The control-plane call may
+        // remain ACTIVE, so the customer must explicitly request a new
+        // media token and grant the microphone again.
+        this.room = null;
+        this.callId = null;
+        Promise.resolve().then(() => this.onCallEvent({
+          kind: 'MEDIA_DISCONNECTED', call: { id: callId },
+        })).catch(() => {});
+      });
     }
     this.room = room;
     this.callId = callId;
