@@ -38,6 +38,8 @@ class ReleaseGateTests(unittest.TestCase):
         token.chmod(0o600)
         self.env = {
             "PB_CALL_IDENTITY_SECRET": "a" * 36,
+            "PB_TENANT": "tenantA",
+            "PB_AGENT": "voiceagent",
             "PB_CALL_DB": str(calls),
             "LIVEKIT_API_KEY": "local-livekit",
             "LIVEKIT_API_SECRET": "b" * 36,
@@ -65,6 +67,7 @@ class ReleaseGateTests(unittest.TestCase):
 
     def test_real_runtime_probes_can_pass_without_false_product_claim(self):
         with patch("porcelainberryme.release_gate._local_call_control", return_value=True), (
+                patch("porcelainberryme.release_gate._authenticated_agent_control", return_value=True)), (
                 patch("porcelainberryme.release_gate._media_signaling", return_value=True)), (
                 patch("porcelainberryme.release_gate._local_ollama_model", return_value=True)):
             report = evaluate(env=self.env, network=True,
