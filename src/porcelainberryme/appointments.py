@@ -482,7 +482,23 @@ class AppointmentVoiceResponder:
         self._pending: tuple[str, str, int] | None = None
         self._cancel_pending: tuple[str, int] | None = None
 
+    def set_call_id(self, call_id: str) -> None:
+        bind = getattr(self.fallback, "set_call_id", None)
+        if bind is not None:
+            bind(call_id)
+
+    def on_turn_delivered(self, utterance: str, response: str) -> None:
+        # Only forward a callback for a response really produced by the
+        # delegated business responder, never for a local calendar action.
+        delivered = getattr(self, "_delegated_reply", None)
+        self._delegated_reply = None
+        if delivered == (utterance, response):
+            forwarded = getattr(self.fallback, "on_turn_delivered", None)
+            if forwarded is not None:
+                forwarded(utterance, response)
+
     async def respond(self, text: str, history: list[dict]) -> str:
+        self._delegated_reply = None
         normalized = re.sub(r"[^\w ]+", " ", text.casefold()).strip()
         normalized = re.sub(r"\s+", " ", normalized)
         if normalized in CANCEL:
@@ -585,7 +601,9 @@ class AppointmentVoiceResponder:
                 "Bitte nennen Sie ein eindeutiges Datum mit Uhrzeit, "
                 "zum Beispiel: Termin am 09.11.2026 um 14 Uhr."
             )
-        return await self.fallback.respond(text, history)
+        answer = await self.fallback.respond(text, history)
+        self._delegated_reply = (text, answer)
+        return answer
 
 
 
