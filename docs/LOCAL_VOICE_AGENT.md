@@ -181,3 +181,19 @@ and on-host resource verification.
 ## Opt-in local after-call notes
 
 Set PB_CALL_NOTES_DB on the existing headless server and the autonomous voice worker to activate the *possibility* of retention. The caller must still speak the explicit consent phrase in docs/POST_CALL_NOTES.md during each individual call, and can revoke. The worker persists bounded user-excerpt notes only after the call ends, then clears transient history; no raw audio or full transcript is written. Source-level tests cover consent and the simulated RTC/voice-session lifecycle, but not live telephone quality.
+
+## Separate fast dialogue model (Hermes-style auxiliary slot)
+
+Set `PB_LOCAL_VOICE_CHAT_MODEL` to the exact name of a locally installed,
+smaller Ollama model. The existing Whisper/Piper components remain in place.
+Ordinary voice calls then use that auxiliary model with `think=false`, a
+15-second total request timeout and the `PB_LOCAL_VOICE_CHAT_MAX_TOKENS`
+budget (default 96, allowed 16..160). Sentence streaming and whole-answer
+fallback use the same budget. A local /api/tags preflight checks installation
+before ringing. The default model and its 160-token budget remain unchanged
+when the fast slot is absent.
+
+Approved knowledge mode and privileged AnanasMe owner commands retain their
+existing authorization; the fast model never becomes a second FruitStack
+orchestration agent. This is a Hermes design pattern, not a Hermes install,
+and still needs real German latency, accuracy and barge-in measurements.
