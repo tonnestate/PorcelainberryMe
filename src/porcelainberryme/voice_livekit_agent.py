@@ -293,9 +293,11 @@ class LiveKitAgentCall:
                         self._stream_track = None
 
                 task.add_done_callback(stream_finished)
-            else:
-                # The correct staff microphone has to be observable on the
-                # actual RTC connection before we relinquish this call.
+            elif (getattr(publication, "source", None)
+                  == self.rtc.TrackSource.SOURCE_MICROPHONE):
+                # Call-center warm handoff: only the authorized employee's
+                # published microphone can complete an AI->human transfer.
+                # Screen audio or unclassified audio must never suffice.
                 task = asyncio.create_task(
                     self._complete_handoff_on_staff_track(
                         call_id, participant.identity,
