@@ -212,9 +212,10 @@ export class CallConsoleController {
         await this.client.disconnect();
         this._update({
           phase: 'idle', callId: null, peer: null, kind: null, busy: false,
-          microphoneMuted: false,
+          microphoneMuted: false, selfCallApprovalId: null,
           message: 'Anruf beendet oder nicht mehr verfügbar.',
         });
+        this._persistSelfCall();
       }
       return;
     }
@@ -697,10 +698,17 @@ export function mountCallConsole({ root, client, ...options }) {
   const disable = element('button', 'Benachrichtigungen deaktivieren');
   disable.type = 'button';
   notifications.append(enable, disable);
+  const selfCallPanel = element('section');
+  selfCallPanel.setAttribute('aria-label', 'KI-Rückruf');
+  const callMe = element('button', 'KI soll mich anrufen');
+  callMe.type = 'button';
+  const revokeSelfCall = element('button', 'KI-Anrufanforderung zurücknehmen');
+  revokeSelfCall.type = 'button';
+  selfCallPanel.append(callMe, revokeSelfCall);
   const audio = element('div');
   audio.setAttribute('aria-label', 'Gesprächsaudio');
   root.replaceChildren(title, status, details, incoming, inCall, form,
-                       notifications, audio);
+                       notifications, selfCallPanel, audio);
 
   const attached = [];
   const oldAudio = client.onRemoteAudio;
@@ -743,6 +751,12 @@ export function mountCallConsole({ root, client, ...options }) {
     mute.setAttribute('aria-pressed', state.microphoneMuted ? 'true' : 'false');
     form.hidden = state.phase !== 'idle';
     notifications.hidden = !state.pushAvailable;
+    selfCallPanel.hidden = controller.identity?.role !== 'human'
+      || typeof client.requestSelfCall !== 'function';
+    callMe.hidden = Boolean(state.selfCallApprovalId);
+    callMe.disabled = state.busy || state.phase !== 'idle';
+    revokeSelfCall.hidden = !state.selfCallApprovalId;
+    revokeSelfCall.disabled = state.busy || state.phase !== 'idle';
     enable.hidden = state.pushEnabled;
     disable.hidden = !state.pushEnabled;
     accept.disabled = decline.disabled = dial.disabled = state.busy;
@@ -771,6 +785,8 @@ export function mountCallConsole({ root, client, ...options }) {
     controller.enablePush().catch(error => controller._error(error));
   });
   disable.addEventListener('click', () => run(() => controller.disablePush()));
+  callMe.addEventListener('click', () => run(() => controller.callMe()));
+  revokeSelfCall.addEventListener('click', () => run(() => controller.revokeCallMe()));
   render(controller.state);
   return {
     controller,
