@@ -1,5 +1,14 @@
 # Hermes Agent → PorcelainberryMe: controlled MCP Internet voice
 
+**Preferred current integration:** durable host-approved calls with a
+separate worker, described in [OUTBOUND_OPERATIONS.md](OUTBOUND_OPERATIONS.md).
+The single-request, in-process configuration below remains only for
+legacy controlled tests. It is NOT the recommended long-running deployment.
+The durable configuration uses PB_CALL_JOBS_DB and the fixed destination
+with explicit approval_id input. It also supports secure bearer rotation
+through PB_MCP_CALL_TOKEN_FILE without exposing the signing secret.
+
+
 **Source implementation exists; deployment not performed.** The Hermes Agent
 docs confirm stdio MCP servers under `~/.hermes/config.yaml`, an `env`
 mapping for subprocesses, explicit `tools.include` allowlists, and
