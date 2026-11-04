@@ -51,6 +51,7 @@ class HumanHandoffResponder:
         self.call_id = call_id
 
     async def respond(self, text: str, history: list[dict]) -> str:
+        self._delegated_reply = None
         phrase = normalized_command(text)
         if phrase in HANDOFF_REQUESTS:
             if self.call_id is None:
@@ -92,14 +93,19 @@ class HumanHandoffResponder:
             if result["state"] == "CANCELLED":
                 return "Die Weiterleitung wurde abgebrochen. Wir bleiben im Gespräch."
             return "Es gibt keine abbrechbare Weiterleitung."
-        return await self.responder.respond(text, history)
+        response = await self.responder.respond(text, history)
+        self._delegated_reply = (text, response)
+        return response
 
     def on_turn_delivered(self, utterance: str, response: str) -> None:
         # Keep delivery-based note consent functional when optional human
         # transfer wraps the note responder as the outermost assistant tool.
-        forwarded = getattr(self.responder, "on_turn_delivered", None)
-        if forwarded is not None:
-            forwarded(utterance, response)
+        delegated = self._delegated_reply
+        self._delegated_reply = None
+        if delegated == (utterance, response):
+            forwarded = getattr(self.responder, "on_turn_delivered", None)
+            if forwarded is not None:
+                forwarded(utterance, response)
 
     async def persist_if_consented(self, call_id, history):
         persist = getattr(self.responder, "persist_if_consented", None)
