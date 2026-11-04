@@ -295,6 +295,45 @@ export class IPCallClient {
     return snapshot;
   }
 
+  /**
+   * A deliberate human click requests a call from the host-configured AI.
+   * No model, recipient, tenant or caller can be supplied here; the signed
+   * server-side human session is the one and only target.
+   */
+  async requestSelfCall(idempotencyKey) {
+    if (typeof idempotencyKey !== 'string'
+        || !/^[A-Za-z0-9_.:-]{8,128}$/.test(idempotencyKey)) {
+      throw new Error('stable_self_call_request_id_required');
+    }
+    const response = await this.request(
+      'POST', '/v1/ip-calls/call-me',
+      { idempotency_key: idempotencyKey },
+    );
+    if (response?.schema !== 'porcelainberryme.outbound-job.v1'
+        || !/^[a-f0-9]{32}$/.test(response?.approval_id)
+        || !['APPROVED', 'QUEUED', 'DISPATCHING', 'FINISHED_UNVERIFIED',
+             'UNKNOWN', 'FAILED', 'EXPIRED', 'REVOKED'].includes(response?.state)) {
+      throw new Error('invalid_self_call_approval_response');
+    }
+    return response;
+  }
+
+  async revokeSelfCall(approvalId) {
+    if (typeof approvalId !== 'string' || !/^[a-f0-9]{32}$/.test(approvalId)) {
+      throw new Error('invalid_self_call_approval_id');
+    }
+    const response = await this.request(
+      'DELETE', '/v1/ip-calls/call-me', { approval_id: approvalId },
+    );
+    if (response?.schema !== 'porcelainberryme.outbound-job.v1'
+        || response?.approval_id !== approvalId
+        || !['REVOKED', 'DISPATCHING', 'FINISHED_UNVERIFIED',
+             'UNKNOWN', 'FAILED', 'EXPIRED'].includes(response?.state)) {
+      throw new Error('invalid_self_call_revocation_response');
+    }
+    return response;
+  }
+
   async dial(to, idempotencyKey) {
     // A trusted caller/agent must provide a stable request ID and contact policy.
     if (!to || !idempotencyKey) throw new Error('recipient_and_idempotency_required');
