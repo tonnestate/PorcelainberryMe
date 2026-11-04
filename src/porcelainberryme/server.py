@@ -44,9 +44,14 @@ def authenticated(secret: str, timestamp: str, supplied: str, payload: bytes,
 
 
 def handler_for(ledger: Ledger, *, secret: str,
-                mirror: OwnerWhatsAppMirror | None = None):
+                mirror: OwnerWhatsAppMirror | None = None,
+                mirror_secret: str = ""):
     if not isinstance(secret, str) or len(secret) < 32:
         raise ValueError("signing_secret_too_short")
+    if mirror is not None and (
+            not isinstance(mirror_secret, str) or len(mirror_secret) < 32
+            or mirror_secret == secret):
+        raise ValueError("whatsapp_mirror_distinct_signing_secret_required")
 
     class Handler(BaseHTTPRequestHandler):
         def _reply(self, status: int, data: dict):
@@ -78,7 +83,8 @@ def handler_for(ledger: Ledger, *, secret: str,
                 return
             timestamp = self.headers.get("X-PB-Timestamp", "")
             supplied = self.headers.get("X-PB-Signature", "")
-            if not authenticated(secret, timestamp, supplied, payload):
+            target_secret = mirror_secret if is_mirror else secret
+            if not authenticated(target_secret, timestamp, supplied, payload):
                 self._reply(401, {"error": "invalid_signature"})
                 return
             try:
@@ -112,10 +118,12 @@ def main():
         raise SystemExit("Configure a long signing secret and absolute DB path")
     ledger = Ledger(path)
     mirror = None
+    mirror_secret = ""
     enabled = os.environ.get("PB_WHATSAPP_MIRROR_ENABLED", "0")
     if enabled not in ("0", "1"):
         raise SystemExit("Invalid WhatsApp mirror enable flag")
     if enabled == "1":
+        mirror_secret = os.environ.get("PB_WHATSAPP_MIRROR_SIGNING_SECRET", "")
         mirror = OwnerWhatsAppMirror(
             path,
             tenant=os.environ.get("PB_WHATSAPP_MIRROR_TENANT", ""),
@@ -124,7 +132,10 @@ def main():
     # The same private loopback service handles signed observer events.
     # Mirrored WhatsApp messages never enter the actionable inbound queue.
     server = ThreadingHTTPServer(
-        ("127.0.0.1", 8873), handler_for(ledger, secret=secret, mirror=mirror),
+        ("127.0.0.1", 8873),
+        handler_for(
+            ledger, secret=secret, mirror=mirror, mirror_secret=mirror_secret,
+        ),
     )
     try:
         server.serve_forever()
