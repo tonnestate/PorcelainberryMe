@@ -82,6 +82,7 @@ class LocalMediaWorkerTests(unittest.IsolatedAsyncioTestCase):
             connected.set()
             await ws.send_json({
                 "event": "MEDIA_START", "channel_id": CHANNEL,
+                "connection_id": CONNECTION,
                 "format": "slin16", "optimal_frame_size": 640, "ptime": 20,
             })
             for _ in range(12):
