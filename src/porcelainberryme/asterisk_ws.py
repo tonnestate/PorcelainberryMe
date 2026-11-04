@@ -48,9 +48,15 @@ class AsteriskPcmSpeaker:
         self._flush_tasks = set()
         self._flush_failed = False
 
-    async def _text(self, command, **params):
+    async def _text(self, command, *, revision: int | None = None, **params):
         async with self._send_lock:
+            # Recheck under the same lock that serializes a pending FLUSH.
+            # Barge-in may happen while waiting for a congested WebSocket.
+            if revision is not None and (
+                    revision != self._revision or self._closed):
+                return False
             await self.ws.send_json({"command": command, **params})
+            return True
 
     async def _flush(self):
         if self.ready and not self._closed:
@@ -93,7 +99,8 @@ class AsteriskPcmSpeaker:
                 raise AsteriskMediaError("asterisk_flush_unverified")
             if current != self._revision or self._closed:
                 return False
-            await self._text("START_MEDIA_BUFFERING")
+            if not await self._text("START_MEDIA_BUFFERING", revision=current):
+                return False
             # Asterisk retimes uncompressed slin16; no RTP, no frame headers.
             # Bounded frame-aligned chunks well under its 65500-byte limit.
             for offset in range(0, len(packet.pcm), FRAME_BYTES * 20):
@@ -101,11 +108,19 @@ class AsteriskPcmSpeaker:
                 if current != self._revision or self._closed:
                     return False
                 async with self._send_lock:
+                    # The earlier check occurred *before* awaiting this lock.
+                    # Without this fence an interrupted turn can send audio
+                    # after FLUSH_MEDIA and contaminate the next spoken turn.
+                    if current != self._revision or self._closed:
+                        return False
                     await self.ws.send_bytes(packet.pcm[offset:offset + FRAME_BYTES * 20])
             if current != self._revision or self._closed:
                 return False
-            await self._text("STOP_MEDIA_BUFFERING")
-            await self._text("MARK_MEDIA", correlation_id=marker)
+            if not await self._text("STOP_MEDIA_BUFFERING", revision=current):
+                return False
+            if not await self._text("MARK_MEDIA", revision=current,
+                                    correlation_id=marker):
+                return False
             verified = await asyncio.wait_for(promise, timeout=self.mark_timeout)
             return bool(verified and current == self._revision and not self._closed)
         except asyncio.TimeoutError as exc:
