@@ -180,17 +180,27 @@ class ReleaseGateTests(unittest.TestCase):
                 self.header = None
             def request(self, method, path, headers):
                 assert self.target == ("127.0.0.1", 8088)
-                assert (method, path) == ("GET", "/ari/asterisk/info")
+                assert method == "GET"
+                assert path in (
+                    "/ari/asterisk/info",
+                    "/ari/applications/porcelain_voice",
+                )
+                self.path = path
                 self.header = headers.get("Authorization")
                 expected = "Basic " + base64.b64encode(
                     b"local-user:local-example-secret").decode()
                 assert self.header == expected
             def getresponse(self):
+                response_data = (
+                    {"system": {"version": "synthetic-test"}}
+                    if self.path == "/ari/asterisk/info"
+                    else {"name": "porcelain_voice"}
+                )
                 return type("Response", (), {
                     "status": 200,
-                    "read": lambda unused, length: json.dumps({
-                        "system": {"version": "synthetic-test"},
-                    }).encode(),
+                    "read": lambda unused, length: json.dumps(
+                        response_data,
+                    ).encode(),
                 })()
             def close(self):
                 pass
@@ -198,6 +208,17 @@ class ReleaseGateTests(unittest.TestCase):
         with patch("porcelainberryme.release_gate.http.client.HTTPConnection",
                    ARIMockConnection):
             self.assertTrue(_local_asterisk_ari(env))
+        class MissingApp(ARIMockConnection):
+            def getresponse(self):
+                result = super().getresponse()
+                if self.path == "/ari/applications/porcelain_voice":
+                    result.status = 404
+                return result
+
+        with patch("porcelainberryme.release_gate.http.client.HTTPConnection",
+                   MissingApp):
+            self.assertFalse(_local_asterisk_ari(env))
+
         with patch("porcelainberryme.release_gate._local_call_control", return_value=True), (
                 patch("porcelainberryme.release_gate._authenticated_agent_control", return_value=True)), (
                 patch("porcelainberryme.release_gate._media_signaling", return_value=True)), (
