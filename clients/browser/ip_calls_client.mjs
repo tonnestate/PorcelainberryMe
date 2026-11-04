@@ -50,14 +50,14 @@ export function callReportDailyCsv(report) {
   const lines = [fields.join(';')];
   for (const entry of report.daily) {
     if (!entry || typeof entry.day !== 'string'
-        || !/^\\d{4}-\\d{2}-\\d{2}$/.test(entry.day)
+        || !/^\d{4}-\d{2}-\d{2}$/.test(entry.day)
         || fields.slice(1).some(key => !Number.isSafeInteger(entry[key])
                                 || entry[key] < 0)) {
       throw new Error('invalid_call_reporting_response');
     }
     lines.push(fields.map(key => entry[key]).join(';'));
   }
-  return lines.join('\\n') + '\\n';
+  return lines.join('\n') + '\n';
 }
 
 export class IPCallClient {
