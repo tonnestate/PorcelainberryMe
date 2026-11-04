@@ -119,3 +119,39 @@ class OwnerWhatsAppMirror:
                  digest, body, now),
             )
             return {"new": True, "state": "MIRRORED"}
+
+
+def main() -> None:
+    """Host-only retention maintenance. No public listener or WhatsApp login."""
+    import argparse
+    import os
+    from .whatsapp_mcp import private_file
+
+    parser = argparse.ArgumentParser(description="Owner WhatsApp mirror maintenance")
+    parser.add_argument("command", choices=("prune", "stats"))
+    args = parser.parse_args()
+    if os.environ.get("PB_WHATSAPP_MIRROR_ENABLED") != "1":
+        parser.error("owner_whatsapp_mirror_disabled")
+    database = private_file(os.environ.get("PORCELAINBERRY_DB", ""))
+    tenant = os.environ.get("PB_WHATSAPP_MIRROR_TENANT", "")
+    destination = os.environ.get("PB_WHATSAPP_MIRROR_DESTINATION", "")
+    mirror = OwnerWhatsAppMirror(
+        database, tenant=tenant, owner_destination=destination,
+    )
+    if args.command == "prune":
+        count = mirror.purge_expired()
+        print(json.dumps({"schema": "porcelainberryme.mirror-maintenance.v1",
+                          "purged": count}))
+    else:
+        with mirror._db() as db:
+            row = db.execute(
+                "SELECT COUNT(*) FROM whatsapp_owner_mirror "
+                "WHERE tenant=? AND owner_destination=?",
+                (tenant, destination),
+            ).fetchone()
+        print(json.dumps({"schema": "porcelainberryme.mirror-maintenance.v1",
+                          "stored_messages": row[0]}))
+
+
+if __name__ == "__main__":
+    main()

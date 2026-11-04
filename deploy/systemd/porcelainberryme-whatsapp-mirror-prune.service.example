@@ -1,0 +1,26 @@
+# TEMPLATE ONLY. Review service user, host paths, and matching environment.
+# No account credentials, WhatsApp client or other consumer are started.
+[Unit]
+Description=PorcelainberryMe personal WhatsApp MCP mirror retention cleanup
+After=porcelainberryme-call-control.service
+ConditionPathExists=/etc/porcelainberryme/voice.env
+
+[Service]
+Type=oneshot
+User=porcelainberryme
+Group=porcelainberryme
+WorkingDirectory=/opt/porcelainberryme
+EnvironmentFile=/etc/porcelainberryme/voice.env
+ExecStart=/opt/porcelainberryme/venv/bin/python -m porcelainberryme.whatsapp_mirror prune
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/porcelainberryme
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

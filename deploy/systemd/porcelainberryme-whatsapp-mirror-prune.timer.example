@@ -1,0 +1,11 @@
+# TEMPLATE ONLY. Enable after verifying the existing mirror DB and env.
+[Unit]
+Description=Clean up the owner-only WhatsApp MCP mirror every hour
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=porcelainberryme-whatsapp-mirror-prune.service
+
+[Install]
+WantedBy=timers.target

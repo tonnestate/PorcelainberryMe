@@ -204,5 +204,81 @@ class MirrorLoopbackTests(unittest.TestCase):
             worker.join(timeout=2)
 
 
+
+class MirrorMaintenanceTests(unittest.TestCase):
+    def test_host_only_prune_respects_retention_and_owner_scope(self):
+        import contextlib
+        from io import StringIO
+        import os
+        import sqlite3
+        import sys
+        from unittest.mock import patch
+        from porcelainberryme.whatsapp_mirror import main as maintenance
+
+        with tempfile.TemporaryDirectory() as temporary:
+            location = Path(temporary) / "private-mirror.sqlite3"
+            Ledger(location)
+            mine = OwnerWhatsAppMirror(
+                str(location), tenant="owner_tenant",
+                owner_destination="verified_owner",
+            )
+            other = OwnerWhatsAppMirror(
+                str(location), tenant="another_tenant",
+                owner_destination="different_owner",
+            )
+            mine.ingest(event(external_id="oldmine"))
+            other.ingest(event(
+                tenant_id="another_tenant", recipient="different_owner",
+                external_id="otherowner",
+            ))
+            with sqlite3.connect(location) as db:
+                db.execute("UPDATE whatsapp_owner_mirror SET received_at=0")
+            env = {
+                "PB_WHATSAPP_MIRROR_ENABLED": "1",
+                "PORCELAINBERRY_DB": str(location),
+                "PB_WHATSAPP_MIRROR_TENANT": "owner_tenant",
+                "PB_WHATSAPP_MIRROR_DESTINATION": "verified_owner",
+            }
+            output = StringIO()
+            with patch.dict(os.environ, env), patch.object(
+                    sys, "argv", ["whatsapp_mirror", "prune"]), (
+                    contextlib.redirect_stdout(output)):
+                maintenance()
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["purged"], 1)
+            self.assertEqual(mine.purge_expired(), 0)
+            with other._db() as db:
+                self.assertEqual(db.execute(
+                    "SELECT COUNT(*) FROM whatsapp_owner_mirror "
+                    "WHERE tenant='another_tenant'"
+                ).fetchone()[0], 1)
+
+    def test_retention_command_refuses_disabled_and_world_readable_db(self):
+        import os
+        import sys
+        from unittest.mock import patch
+        from porcelainberryme.whatsapp_mirror import main as maintenance
+
+        with tempfile.TemporaryDirectory() as temporary:
+            location = Path(temporary) / "private-mirror.sqlite3"
+            Ledger(location)
+            settings = {
+                "PORCELAINBERRY_DB": str(location),
+                "PB_WHATSAPP_MIRROR_TENANT": "owner_tenant",
+                "PB_WHATSAPP_MIRROR_DESTINATION": "verified_owner",
+            }
+            with patch.dict(os.environ, {
+                    **settings, "PB_WHATSAPP_MIRROR_ENABLED": "0",
+            }), patch.object(sys, "argv", ["whatsapp_mirror", "prune"]):
+                with self.assertRaises(SystemExit):
+                    maintenance()
+            location.chmod(0o644)
+            with patch.dict(os.environ, {
+                    **settings, "PB_WHATSAPP_MIRROR_ENABLED": "1",
+            }), patch.object(sys, "argv", ["whatsapp_mirror", "prune"]):
+                with self.assertRaises(PermissionError):
+                    maintenance()
+
+
 if __name__ == "__main__":
     unittest.main()
