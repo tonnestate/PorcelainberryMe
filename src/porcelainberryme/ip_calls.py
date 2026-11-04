@@ -996,6 +996,14 @@ def make_handler(registry: CallRegistry, *, self_call=None):
                 if uri.path == "/v1/ip-calls/call-me":
                     if self_call is None:
                         raise CallError("call_me_not_configured", 503)
+                    if self.command == "GET":
+                        qs = parse_qs(uri.query, keep_blank_values=True)
+                        if (set(qs) != {"approval_id"}
+                                or len(qs["approval_id"]) != 1):
+                            raise CallError("self_call_approval_id_required")
+                        return self._reply(200, self_call.status(
+                            claims, qs["approval_id"][0],
+                        ))
                     if self.command == "POST":
                         return self._reply(202, self_call.request(
                             claims, self._body(),
