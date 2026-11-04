@@ -156,6 +156,39 @@ export class IPCallClient {
   }
 
   /**
+   * Personal operational reporting in UTC, never tenant-wide management data.
+   * The signed session is sent in the existing Authorization header, never
+   * in URLs; the server enforces actual participant access and 30-day retention.
+   */
+  async callReport(window = {}) {
+    if (!window || typeof window !== 'object' || Array.isArray(window)
+        || Object.keys(window).some(key => !['start', 'end'].includes(key))) {
+      throw new Error('invalid_call_reporting_window');
+    }
+    const hasStart = Object.hasOwn(window, 'start');
+    const hasEnd = Object.hasOwn(window, 'end');
+    if (hasStart !== hasEnd) throw new Error('invalid_call_reporting_window');
+    let path = '/v1/ip-calls/report';
+    if (hasStart) {
+      const { start, end } = window;
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+          || start < 0 || end <= start || end - start > 30 * 86400) {
+        throw new Error('invalid_call_reporting_window');
+      }
+      path += '?start=' + start + '&end=' + end;
+    }
+    const report = await this.request('GET', path);
+    if (report?.schema !== 'porcelainberryme.reporting.calls.v1'
+        || report?.scope !== 'authenticated_participant_only'
+        || report?.timezone !== 'UTC'
+        || !report.metrics || !Array.isArray(report.daily)
+        || report.daily.length > 31) {
+      throw new Error('invalid_call_reporting_response');
+    }
+    return report;
+  }
+
+  /**
    * A browser may have been asleep while events were pruned. Recover the
    * current live calls with a server-authoritative scoped snapshot.
    * A missing connected call means the server has ended it.
