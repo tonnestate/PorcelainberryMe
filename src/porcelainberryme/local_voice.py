@@ -220,14 +220,23 @@ class LocalOllamaResponder:
     """Localhost-only API; no external LLM network traffic or agent tools."""
 
     def __init__(self, model: str, *, system: str = DEFAULT_SYSTEM,
-                 timeout: float = 30):
+                 timeout: float = 30, max_tokens: int = 160,
+                 disable_thinking: bool = False):
         if not model or len(model) > 128 or any(c.isspace() for c in model):
             raise ValueError("explicit_local_model_required")
         if not isinstance(system, str) or not 1 <= len(system) <= 3000:
             raise ValueError("invalid_system_instructions")
+        if type(max_tokens) is not int or not 16 <= max_tokens <= 160:
+            raise ValueError("local_voice_token_budget_out_of_range")
+        if type(disable_thinking) is not bool:
+            raise ValueError("local_voice_thinking_setting_invalid")
+        if not isinstance(timeout, (int, float)) or not 1 <= timeout <= 60:
+            raise ValueError("local_voice_timeout_invalid")
         self.model = model
         self.system = system
-        self.timeout = timeout
+        self.timeout = float(timeout)
+        self.max_tokens = max_tokens
+        self.disable_thinking = disable_thinking
 
     async def preflight(self) -> None:
         """Reject missing local models before dialing any recipient.
@@ -289,7 +298,8 @@ class LocalOllamaResponder:
             "messages": [{"role": "system", "content": self.system}]
             + history[-12:]
             + [{"role": "user", "content": text}],
-            "options": {"num_predict": 160, "temperature": 0.5},
+            "options": {"num_predict": self.max_tokens, "temperature": 0.5},
+            **({"think": False} if self.disable_thinking else {}),
         }
         remaining = ""
         generated_chars = 0
@@ -355,7 +365,8 @@ class LocalOllamaResponder:
                 "messages": [{"role": "system", "content": self.system}]
                 + history[-12:]
                 + [{"role": "user", "content": text}],
-                "options": {"num_predict": 160, "temperature": 0.5},
+                "options": {"num_predict": self.max_tokens, "temperature": 0.5},
+            **({"think": False} if self.disable_thinking else {}),
             }
             try:
                 conn.request("POST", "/api/chat",
