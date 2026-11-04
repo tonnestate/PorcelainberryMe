@@ -138,6 +138,66 @@ class DurableJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.state(old), "DISPATCHING")
 
 
+    async def test_approved_durable_job_uses_existing_actual_call_orchestrator(self):
+        import sys
+        from types import ModuleType, SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        from porcelainberryme.ip_calls import verify_identity_token
+        key = self.approve()
+        self.request(key)
+        events = []
+        fake_livekit = ModuleType("livekit")
+        fake_livekit.rtc = SimpleNamespace()
+
+        class Control:
+            def __init__(self, token):
+                claims = verify_identity_token(token, SECRET)
+                self.checks = 0
+                self.claims = claims
+
+            async def whoami(self):
+                return {"role": self.claims["role"],
+                        "tenant": self.claims["tenant"],
+                        "subject": self.claims["sub"]}
+
+            async def originate(self, recipient, request_id):
+                events.append(("originate", recipient, request_id))
+                return {"id": "b" * 32, "agent_initiated": True}
+
+            async def status(self, call_id):
+                return {"state": "ACTIVE"}
+
+            async def hangup(self, call_id):
+                events.append(("hangup", call_id))
+
+        class Session:
+            def __init__(self, **kwargs):
+                events.append(("session", kwargs["callee"]))
+
+            async def speak(self, call_id):
+                events.append(("voice", call_id))
+
+        with patch.dict(sys.modules, {"livekit": fake_livekit}), (
+                patch("porcelainberryme.voice_livekit_agent.LocalFasterWhisper",
+                      return_value=object())), (
+                patch("porcelainberryme.voice_livekit_agent.LocalPiperVoice",
+                      return_value=object())), (
+                patch("porcelainberryme.voice_livekit_agent.LocalOllamaResponder",
+                      return_value=SimpleNamespace(preflight=AsyncMock()))), (
+                patch("porcelainberryme.voice_livekit_agent.CallControlClient", Control)), (
+                patch("porcelainberryme.voice_livekit_agent.LiveKitAgentCall", Session)):
+            await worker_once(
+                self.store, tenant=TENANT, agent=AGENT,
+                identity_secret=SECRET,
+                voice_settings=dict(whisper_model="existing",
+                                    ollama_model="installed",
+                                    piper_binary="existing", piper_model="existing"),
+            )
+        self.assertIn(("originate", TARGET, key), events)
+        self.assertIn(("voice", "b" * 32), events)
+        self.assertEqual(self.state(key), "FINISHED_UNVERIFIED")
+
+
 
 if __name__ == "__main__":
     unittest.main()
