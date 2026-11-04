@@ -95,6 +95,10 @@ class DurableJobTests(unittest.IsolatedAsyncioTestCase):
             recipient=TARGET)["state"], "APPROVED")
         store.approve(tenant=TENANT, agent=AGENT, recipient=TARGET,
                       consent_reference="host-consent-0004")
+        # Only QUEUED jobs are eligible for dispatch; first request
+        # the approved third item, then claim it atomically.
+        store.request(approval_id=third, tenant=TENANT, agent=AGENT,
+                      recipient=TARGET)
         # One job is already in DISPATCHING, so the retained limit
         # independently protects growth even when pending capacity remains.
         self.assertIsNotNone(store.claim(tenant=TENANT, agent=AGENT))
