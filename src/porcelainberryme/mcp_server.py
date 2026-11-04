@@ -18,6 +18,8 @@ from typing import Any
 
 from .voice_livekit_agent import CallControlClient
 from .outbound_jobs import DurableCallJobs
+from .whatsapp_mcp import OwnerWhatsAppMCP
+from .whatsapp_inbox import OwnerWhatsAppInbox
 
 _CALL_ID = re.compile(r"^[a-f0-9]{32}$")
 _SUBJECT = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
@@ -37,7 +39,9 @@ class MCPCallVisibility:
                  subject: str, role: str, call_target: str = "",
                  call_request_id: str = "",
                  voice_launcher: Callable[[], Awaitable[None]] | None = None,
-                 job_store: DurableCallJobs | None = None):
+                 job_store: DurableCallJobs | None = None,
+                 whatsapp: OwnerWhatsAppMCP | None = None,
+                 whatsapp_inbox: OwnerWhatsAppInbox | None = None):
         if not isinstance(tenant, str) or not _SUBJECT.fullmatch(tenant):
             raise ValueError("mcp_trusted_tenant_required")
         if not isinstance(subject, str) or not _SUBJECT.fullmatch(subject):
@@ -62,6 +66,16 @@ class MCPCallVisibility:
                 raise ValueError("mcp_host_approved_voice_job_required")
         elif call_target or call_request_id:
             raise ValueError("mcp_outbound_voice_job_not_authorized")
+        if whatsapp is not None:
+            if (role != "agent" or not isinstance(whatsapp, OwnerWhatsAppMCP)
+                    or (whatsapp.tenant, whatsapp.agent) != (tenant, subject)):
+                raise PermissionError("mcp_whatsapp_owner_identity_required")
+        if whatsapp_inbox is not None:
+            if (not isinstance(whatsapp_inbox, OwnerWhatsAppInbox)
+                    or whatsapp is None or whatsapp_inbox.tenant != tenant):
+                raise PermissionError("mcp_whatsapp_owner_inbox_identity_required")
+        self._whatsapp = whatsapp
+        self._whatsapp_inbox = whatsapp_inbox
         self._control = control
         self._scope = {"tenant": tenant, "subject": subject, "role": role}
         self._voice_launcher = voice_launcher
@@ -175,13 +189,18 @@ class MCPCallVisibility:
         if self.can_place_calls:
             tools += ["porcelainberryme_call_me",
                       "porcelainberryme_call_me_status"]
+        if self._whatsapp is not None:
+            tools += ["porcelainberryme_whatsapp_send",
+                      "porcelainberryme_whatsapp_send_status"]
+        if self._whatsapp_inbox is not None:
+            tools += ["porcelainberryme_whatsapp_inbox"]
         return {
             "schema": "porcelainberryme.mcp.capabilities.v1",
             "tenant": self._scope["tenant"],
             "subject": self._scope["subject"],
             "role": self._scope["role"],
             "transport": "internet_webrtc",
-            "read_only": not self.can_place_calls,
+            "read_only": not (self.can_place_calls or self._whatsapp is not None),
             "tools": tools,
         }
 
@@ -299,6 +318,28 @@ class MCPCallVisibility:
             raise RuntimeError("mcp_call_identity_response_mismatch")
         return {"schema": "porcelainberryme.mcp.call.v1", "call": result}
 
+    async def whatsapp_send(self, approval_id: str) -> dict:
+        """Use exactly one host-approved recipient and message body."""
+        if self._whatsapp is None:
+            raise PermissionError("mcp_whatsapp_not_enabled")
+        await self._verify_identity()
+        return await asyncio.to_thread(self._whatsapp.send, approval_id)
+
+    async def whatsapp_send_status(self, approval_id: str) -> dict:
+        if self._whatsapp is None:
+            raise PermissionError("mcp_whatsapp_not_enabled")
+        await self._verify_identity()
+        return await asyncio.to_thread(self._whatsapp.status, approval_id)
+
+    async def whatsapp_messages(self, after: int = 0, limit: int = 20) -> dict:
+        """Read only previously authenticated, owner-scoped local events."""
+        if self._whatsapp_inbox is None:
+            raise PermissionError("mcp_whatsapp_inbox_not_enabled")
+        await self._verify_identity()
+        return await asyncio.to_thread(
+            self._whatsapp_inbox.recent, after=after, limit=limit,
+        )
+
 
 def build_server(visibility: MCPCallVisibility):
     """Register only explicitly defined, side-effect-free tools."""
@@ -360,6 +401,27 @@ def build_server(visibility: MCPCallVisibility):
         async def porcelainberryme_call_me_status() -> str:
             """Check actual worker state; exit is not evidence of a conversation."""
             return json.dumps(await visibility.call_me_status(), ensure_ascii=False)
+
+    if visibility._whatsapp is not None:
+        @mcp.tool()
+        async def porcelainberryme_whatsapp_send(approval_id: str) -> str:
+            """Send only one explicitly host-approved WhatsApp message."""
+            return json.dumps(await visibility.whatsapp_send(approval_id),
+                              ensure_ascii=False)
+
+        @mcp.tool()
+        async def porcelainberryme_whatsapp_send_status(approval_id: str) -> str:
+            """Read provider acceptance, not delivery or read receipts."""
+            return json.dumps(await visibility.whatsapp_send_status(approval_id),
+                              ensure_ascii=False)
+
+    if visibility._whatsapp_inbox is not None:
+        @mcp.tool()
+        async def porcelainberryme_whatsapp_inbox(
+                after: int = 0, limit: int = 20) -> str:
+            """Read bounded incoming WhatsApp events from the existing ledger."""
+            return json.dumps(await visibility.whatsapp_messages(after, limit),
+                              ensure_ascii=False)
 
     return mcp
 
@@ -455,6 +517,30 @@ def main() -> None:
                 "call_request_id": request_id,
                 "voice_launcher": start_verified_call,
             }
+    whatsapp_enabled = os.environ.get("PB_MCP_WHATSAPP_ENABLED", "")
+    if whatsapp_enabled not in ("", "0", "1"):
+        raise ValueError("mcp_whatsapp_enable_flag_invalid")
+    if whatsapp_enabled == "1":
+        if (role != "agent"
+                or os.environ.get("PB_MCP_WHATSAPP_OWNER_TENANT") != tenant
+                or os.environ.get("PB_MCP_WHATSAPP_OWNER_AGENT") != subject):
+            raise PermissionError("mcp_whatsapp_owner_binding_required")
+        whatsapp = OwnerWhatsAppMCP(
+            tenant=tenant, agent=subject,
+            sender=os.environ.get("PB_MCP_WHATSAPP_OWNER_SENDER", ""),
+            approvals_db=os.environ.get("PB_MCP_WHATSAPP_APPROVALS_DB", ""),
+            token_file=os.environ.get("PB_MCP_WHATSAPP_TOKEN_FILE", ""),
+        )
+        voice_options["whatsapp"] = whatsapp
+        inbox_db = os.environ.get("PB_MCP_WHATSAPP_INBOX_DB", "")
+        owner_destination = os.environ.get("PB_MCP_WHATSAPP_OWNER_DESTINATION", "")
+        if bool(inbox_db) != bool(owner_destination):
+            raise ValueError("mcp_whatsapp_inbox_binding_required")
+        if inbox_db:
+            voice_options["whatsapp_inbox"] = OwnerWhatsAppInbox(
+                database=inbox_db, tenant=tenant,
+                owner_destination=owner_destination,
+            )
     visibility = MCPCallVisibility(
         client, tenant=tenant, subject=subject, role=role,
         **voice_options,
