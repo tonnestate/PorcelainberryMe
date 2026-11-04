@@ -138,9 +138,23 @@ class InboundAgentControlTests(unittest.TestCase):
         self.db.configure_inbound_agent("tenantA", "agentA", False)
         with self.assertRaisesRegex(CallError, "inbound_agent_not_enabled"):
             self.db.claim_inbound(self.agent, call["id"])
-        # Human-to-human call control remains unaffected.
+        # Disabling an inbound receptionist rescinds unanswered incoming
+        # calls, rather than leaving customers ringing into an offline agent.
         self.assertEqual(self.db.status(self.customer, call["id"])["state"],
-                         "RINGING")
+                         "DECLINED")
+        with self.assertRaisesRegex(CallError, "inbound_agent_not_enabled"):
+            self.db.originate(self.customer, "agentA", "disabled-agent-call-002")
+        # Normal customer-to-staff calls remain possible.
+        ordinary = self.db.originate(
+            self.customer, "staff", "ordinary-human-call-003",
+        )
+        self.assertEqual(ordinary["state"], "RINGING")
+        self.db.decide(self.staff, ordinary["id"], "decline")
+        self.db.configure_inbound_agent("tenantA", "agentA", True)
+        reopened = self.db.originate(
+            self.customer, "agentA", "reenabled-inbound-call-004",
+        )
+        self.assertEqual(reopened["state"], "RINGING")
 
     def test_expired_ring_is_not_autoaccepted(self):
         call = self.call()
