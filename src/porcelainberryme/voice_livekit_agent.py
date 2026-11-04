@@ -20,7 +20,7 @@ from .agent_knowledge import DEFAULT_GREETING
 from .local_voice import (
     AudioPacket, LocalFasterWhisper, LocalOllamaResponder,
     LocalPiperVoice, LocalVoiceUnavailable, VoiceTurnEngine,
-    WebRTCTurnDetector,
+    WebRTCTurnDetector, emit_voice_metrics,
 )
 
 
@@ -397,6 +397,14 @@ class LiveKitAgentCall:
             # per-call user opt-in; transport teardown always takes priority.
             finished_turns = list(self._engine.history)
             await self._engine.close()
+            if callable(getattr(self._engine, "metrics_snapshot", None)):
+                try:
+                    emit_voice_metrics(
+                        self._engine.metrics_snapshot(), transport="livekit",
+                    )
+                except (ValueError, OSError):
+                    # Telemetry must never prevent room/media teardown.
+                    pass
             await room.disconnect()
             await self._source.aclose()
             persist = getattr(self.llm, "persist_if_consented", None)
