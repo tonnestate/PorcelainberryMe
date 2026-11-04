@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import struct
+import threading
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -442,6 +443,63 @@ class LocalVoiceTests(unittest.IsolatedAsyncioTestCase):
         # but its interrupted continuation must never be delivered.
         self.assertEqual(len(speaker.packets), 2)
         await engine.close()
+
+    async def test_cancelled_whisper_thread_remains_exclusive_until_real_exit(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        class FakeAudio:
+            def astype(self, value):
+                return self
+
+            def __truediv__(self, value):
+                return self
+
+        fake_numpy = SimpleNamespace(
+            float32="float32",
+            frombuffer=lambda data, dtype: FakeAudio(),
+        )
+
+        class FakeWhisperModel:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def transcribe(self, audio, **kwargs):
+                entered.set()
+                release.wait(timeout=2)
+                return iter([SimpleNamespace(text="Hallo")]), None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "model.bin").write_bytes(b"local-test-model")
+            with patch.dict("sys.modules", {
+                "numpy": fake_numpy,
+                "faster_whisper": SimpleNamespace(WhisperModel=FakeWhisperModel),
+            }):
+                stt = LocalFasterWhisper(tmp)
+                active = asyncio.create_task(stt.transcribe(audio_frame()))
+                try:
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+                    active.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await active
+                    with self.assertRaisesRegex(
+                        LocalVoiceUnavailable, "local_whisper_inference_busy",
+                    ):
+                        await stt.transcribe(audio_frame())
+                finally:
+                    release.set()
+
+                for attempt in range(40):
+                    try:
+                        result = await stt.transcribe(audio_frame())
+                        break
+                    except LocalVoiceUnavailable as exc:
+                        if str(exc) != "local_whisper_inference_busy":
+                            raise
+                        await asyncio.sleep(0.01)
+                else:
+                    self.fail("previous native inference never released its slot")
+                self.assertEqual(result, "Hallo")
 
     async def test_opt_in_webrtc_vad_uses_20ms_frames_and_resets_state(self):
         created = []
