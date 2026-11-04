@@ -312,6 +312,17 @@ class LiveKitAgentCall:
                     self._stream_task.cancel()
                 self._stream_track = None
 
+        @room.on("participant_disconnected")
+        def participant_disconnected(participant):
+            # The Python SDK may not emit track_unsubscribed after its
+            # participant entry has already disappeared. Clear partial
+            # input here as a second independent recovery path.
+            if participant.identity == self._expected_participant:
+                self._engine.reset_input()
+                if self._stream_task is not None:
+                    self._stream_task.cancel()
+                self._stream_track = None
+
         @room.on("disconnected")
         def room_disconnected(*args):
             self._closed.set()
