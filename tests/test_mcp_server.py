@@ -48,6 +48,15 @@ class FakeControl(CallControlClient):
             return {"calls": list(self.statuses.values()), "server_time": 1}
         raise AssertionError("unexpected_api_path")
 
+    async def inbox(self, after=0):
+        self.calls.append(("inbox", after))
+        return {"events": [
+            {"cursor": after + i + 1, "kind": "ACTIVE", "call": {
+                **self.statuses[FIRST], "peer": "private-person",
+            }}
+            for i in range(4)
+        ], "next_cursor": after + 4}
+
     async def status(self, call_id):
         self.calls.append(("status", call_id))
         if call_id not in self.allowed:
@@ -69,7 +78,7 @@ class MCPCallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capabilities["tenant"], "tenantA")
         self.assertEqual(capabilities["role"], "agent")
         self.assertTrue(capabilities["read_only"])
-        self.assertEqual(len(capabilities["tools"]), 3)
+        self.assertEqual(len(capabilities["tools"]), 4)
         out = await bridge.active_calls(1)
         self.assertTrue(out["truncated"])
         self.assertEqual(out["calls"], [{
@@ -97,6 +106,21 @@ class MCPCallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls[before:], [("whoami",)])
         with self.assertRaisesRegex(PermissionError, "mcp_call_identity_mismatch"):
             await bridge.call_status(FIRST)
+
+    async def test_event_cursor_is_returned_only_after_last_exposed_event(self):
+        client = FakeControl()
+        bridge = visibility(client)
+        reply = await bridge.call_events(after=100, limit=2)
+        self.assertEqual(reply["next_cursor"], 102)
+        self.assertTrue(reply["truncated"])
+        self.assertEqual([item["cursor"] for item in reply["events"]], [101, 102])
+        self.assertEqual(client.calls, [("whoami",), ("inbox", 100)])
+        self.assertNotIn("private-person", json.dumps(reply))
+        with self.assertRaisesRegex(ValueError, "mcp_invalid_event_cursor"):
+            await bridge.call_events(after=-1)
+        with self.assertRaisesRegex(ValueError, "mcp_invalid_event_limit"):
+            await bridge.call_events(limit=100)
+        self.assertEqual(len(client.calls), 2)
 
     async def test_unrelated_participant_is_not_visible(self):
         client = FakeControl()
@@ -148,6 +172,7 @@ class MCPCallTests(unittest.IsolatedAsyncioTestCase):
                 "porcelainberryme_capabilities",
                 "porcelainberryme_active_calls",
                 "porcelainberryme_call_status",
+                "porcelainberryme_call_events",
             })
             output = await server.registered["porcelainberryme_call_status"](FIRST)
         self.assertEqual(json.loads(output)["call"]["state"], "ACTIVE")
