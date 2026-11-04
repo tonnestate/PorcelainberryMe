@@ -95,6 +95,23 @@ class AsteriskARI:
         if (not isinstance(caller, dict) or caller.get("id") != caller_channel_id
                 or authorize_channel(caller) is not True):
             raise PermissionError("asterisk_caller_not_authorized")
+        if caller.get("state") not in ("Up", "Ring", "Ringing"):
+            raise PermissionError("asterisk_caller_media_state_not_authorized")
+        if caller["state"] != "Up":
+            # A StasisStart event for an incoming call often arrives while
+            # ringing. Without explicit answer the bridge has no two-way
+            # media. Only a previously verified fixed dialplan route can be
+            # answered; never use Caller-ID as caller authentication.
+            await self._call(
+                session, "POST", f"/channels/{caller_channel_id}/answer")
+            confirmed = await self._call(
+                session, "GET", f"/channels/{caller_channel_id}")
+            if (not isinstance(confirmed, dict)
+                    or confirmed.get("id") != caller_channel_id
+                    or confirmed.get("state") != "Up"
+                    or authorize_channel(confirmed) is not True):
+                # Ambiguous answer outcome: do not bridge or answer twice.
+                raise ARIProtocolError("asterisk_caller_answer_unconfirmed")
 
         # Only resources returned by this operation may be torn down later.
         # A partial/ambiguous ARI response is never transparently retried.
