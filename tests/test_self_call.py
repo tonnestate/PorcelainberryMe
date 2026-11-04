@@ -71,6 +71,31 @@ class SelfCallHTTPTests(unittest.TestCase):
         except HTTPError as exc:
             return exc.code, json.load(exc)
 
+    def status(self, key: str, *, actor="owner"):
+        token = mint_identity_token(
+            SECRET, "company", actor, "human", now=self.now[0],
+        )
+        request = Request(
+            f"http://127.0.0.1:{self.server.server_port}"
+            f"/v1/ip-calls/call-me?approval_id={key}",
+            headers={"Authorization": "Bearer " + token},
+        )
+        try:
+            with urlopen(request, timeout=3) as response:
+                return response.status, json.load(response)
+        except HTTPError as exc:
+            return exc.code, json.load(exc)
+
+    def test_status_is_read_only_and_owner_scoped(self):
+        _, created = self.request()
+        key = created["approval_id"]
+        status, result = self.status(key)
+        self.assertEqual(status, 200)
+        self.assertEqual(result["state"], "QUEUED")
+        self.assertNotIn("owner", json.dumps(result))
+        self.assertEqual(self.status(key, actor="other_human")[0], 404)
+        self.assertEqual(self.status("../wrong")[0], 404)
+
     def test_click_to_approved_queue_to_actual_authoritative_call(self):
         code, created = self.request()
         self.assertEqual(code, 202)
