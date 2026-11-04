@@ -117,7 +117,8 @@ class FakeRTC:
             assert options.auto_subscribe is True
             participant = SimpleNamespace(identity=self.remote_identity)
             self.events["track_subscribed"](
-                SimpleNamespace(kind=1), SimpleNamespace(),
+                SimpleNamespace(kind=1),
+                SimpleNamespace(source=FakeRTC.TrackSource.SOURCE_MICROPHONE),
                 participant,
             )
 
@@ -350,16 +351,16 @@ class VoiceLiveKitTests(unittest.IsolatedAsyncioTestCase):
                 participant = SimpleNamespace(identity=identity)
                 old = SimpleNamespace(kind=1, name="old")
                 new = SimpleNamespace(kind=1, name="new")
-                self.events["track_subscribed"](old, SimpleNamespace(), participant)
+                self.events["track_subscribed"](old, SimpleNamespace(source=2), participant)
                 await asyncio.sleep(0.02)
                 self.events["track_unsubscribed"](old, SimpleNamespace(), participant)
                 # SDKs may also drop a remote participant without emitting
                 # another unsubscribed event. Both paths must be idempotent.
                 self.events["participant_disconnected"](participant)
-                self.events["track_subscribed"](new, SimpleNamespace(), participant)
+                self.events["track_subscribed"](new, SimpleNamespace(source=2), participant)
                 # Same publication may be emitted twice by the SDK: only
                 # one audio stream must consume it.
-                self.events["track_subscribed"](new, SimpleNamespace(), participant)
+                self.events["track_subscribed"](new, SimpleNamespace(source=2), participant)
 
         rooms = []
         def room_factory():
