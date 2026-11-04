@@ -58,6 +58,11 @@ function mockedClient({ calls = {}, identity = {
       mock.callId = id;
       return { room: 'pb_' + id };
     },
+    async setMicrophoneMuted(muted) {
+      if (!mock.callId) throw new Error('media_not_connected');
+      log.push(['microphone_muted', muted]);
+      return { muted };
+    },
     async disconnect() {
       log.push(['media_disconnected']);
       mock.callId = null;
@@ -326,6 +331,32 @@ class FakeElement {
   remove() { /* fake removed element */ }
 }
 
+test('active call microphone can be muted and unmuted without reconnecting', async () => {
+  const calls = { [CID]: incoming() };
+  const client = mockedClient({ calls });
+  const controller = new CallConsoleController({
+    client, serviceWorkerContainer: null,
+  });
+  await controller.start();
+  await controller.resumeCall(CID);
+  assert.equal(await controller.toggleMicrophoneMute(), false);
+  assert.equal(controller.state.microphoneMuted, false);
+  assert.equal(await controller.accept(), true);
+  assert.equal(await controller.toggleMicrophoneMute(), true);
+  assert.equal(controller.state.microphoneMuted, true);
+  assert.equal(await controller.toggleMicrophoneMute(), true);
+  assert.equal(controller.state.microphoneMuted, false);
+  assert.deepEqual(client.log.filter(x => x[0] === 'microphone_muted'), [
+    ['microphone_muted', true],
+    ['microphone_muted', false],
+  ]);
+  assert.equal(client.log.filter(x => x[0] === 'media_connect').length, 1);
+  await controller.hangup();
+  assert.equal(controller.state.microphoneMuted, false);
+  assert.equal(await controller.toggleMicrophoneMute(), false);
+  await controller.destroy();
+});
+
 test('unstyled accessible call controls bind real accept/hangup handlers', async () => {
   const doc = { createElement: tag => new FakeElement(tag, doc) };
   const root = new FakeElement('main', doc);
@@ -349,6 +380,14 @@ test('unstyled accessible call controls bind real accept/hangup handlers', async
   const inCall = root.children[4];
   assert.equal(inCall.hidden, false);
   assert.equal(inCall.children[1].textContent, 'Auflegen');
+  const mute = inCall.children[2];
+  assert.equal(mute.textContent, 'Stummschalten');
+  assert.equal(mute.attrs['aria-pressed'], 'false');
+  mute.fire('click');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(mute.textContent, 'Mikrofon aktivieren');
+  assert.equal(mute.attrs['aria-pressed'], 'true');
+  assert.equal(mounted.controller.state.microphoneMuted, true);
   inCall.children[1].fire('click');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(mounted.controller.state.phase, 'idle');
