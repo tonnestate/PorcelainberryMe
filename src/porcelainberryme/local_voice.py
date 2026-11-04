@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from contextlib import aclosing
 from dataclasses import dataclass
 import http.client
 import json
 import math
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -253,6 +255,79 @@ class LocalOllamaResponder:
                     conn.close()
         await asyncio.to_thread(probe)
 
+    async def stream_sentences(self, text: str, history: list[dict]):
+        """Yield complete sentences from local Ollama NDJSON as they arrive.
+
+        Uses an async, locally connected HTTP client so cancelled speech
+        turns close the response instead of leaving a blocking inference
+        reader behind. Each segment can be synthesized before model
+        generation finishes. No remote providers, tools or model pulls.
+        """
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 1200:
+            raise ValueError("invalid_transcribed_text")
+        try:
+            import aiohttp
+        except ImportError as exc:
+            raise LocalVoiceUnavailable("local_stream_http_not_installed") from exc
+
+        request = {
+            "model": self.model,
+            "stream": True,
+            "messages": [{"role": "system", "content": self.system}]
+            + history[-12:]
+            + [{"role": "user", "content": text}],
+            "options": {"num_predict": 160, "temperature": 0.5},
+        }
+        remaining = ""
+        generated_chars = 0
+        saw_done = False
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    "http://127.0.0.1:11434/api/chat", json=request,
+                ) as response:
+                    if response.status != 200:
+                        raise LocalVoiceUnavailable("local_ollama_reply_failed")
+                    async for raw in response.content:
+                        if len(raw) > 8192:
+                            raise LocalVoiceUnavailable("local_ollama_stream_line_too_long")
+                        try:
+                            event = json.loads(raw)
+                            if not isinstance(event, dict) or type(event.get("done")) is not bool:
+                                raise ValueError("invalid_stream_event")
+                            if event.get("error"):
+                                raise ValueError("ollama_stream_error")
+                            message = event.get("message") or {}
+                            piece = message.get("content", "")
+                            if not isinstance(piece, str):
+                                raise ValueError("invalid_stream_content")
+                        except (ValueError, TypeError, AttributeError) as exc:
+                            raise LocalVoiceUnavailable("local_ollama_stream_invalid") from exc
+                        generated_chars += len(piece)
+                        if generated_chars > 500:
+                            raise LocalVoiceUnavailable("local_ollama_reply_too_long")
+                        remaining += piece
+                        # Only emit complete sentence boundaries. Sentence
+                        # content stays bounded by the 500-character limit.
+                        while True:
+                            boundary = re.search(r"[.!?]\\s+", remaining)
+                            if boundary is None:
+                                break
+                            sentence = remaining[:boundary.start() + 1].strip()
+                            remaining = remaining[boundary.end():]
+                            if sentence:
+                                yield sentence
+                        if event["done"]:
+                            saw_done = True
+                            if remaining.strip():
+                                yield remaining.strip()
+                            break
+                    if not saw_done or generated_chars == 0:
+                        raise LocalVoiceUnavailable("local_ollama_stream_incomplete")
+        except (OSError, asyncio.TimeoutError, aiohttp.ClientError) as exc:
+            raise LocalVoiceUnavailable("local_ollama_stream_unreachable") from exc
+
     async def respond(self, text: str, history: list[dict]) -> str:
         if not 1 <= len(text.strip()) <= 1200:
             raise ValueError("invalid_transcribed_text")
@@ -419,14 +494,42 @@ class VoiceTurnEngine:
                 utterance = (await self.stt.transcribe(pcm)).strip()
                 if epoch != self._epoch or self._closed or not utterance:
                     continue
-                response = (await self.llm.respond(utterance, self.history)).strip()
-                if epoch != self._epoch or self._closed or not response:
-                    continue
-                audio = await self.tts.synthesize(response)
-                if epoch != self._epoch or self._closed:
-                    continue
-                heard = await self.speaker.play(audio)
-                if heard and epoch == self._epoch and not self._closed:
+                stream = getattr(self.llm, "stream_sentences", None)
+                if stream is not None:
+                    # Each sentence is synthesized and published before the
+                    # complete LLM response arrives. Cancel/interrupt checks
+                    # also stop subsequent speech chunks and close the HTTP
+                    # stream without committing a speculative conversation.
+                    spoken_parts = []
+                    heard = True
+                    async with aclosing(stream(utterance, self.history)) as sentences:
+                        async for sentence in sentences:
+                            if epoch != self._epoch or self._closed:
+                                heard = False
+                                break
+                            if not isinstance(sentence, str) or not sentence.strip():
+                                raise LocalVoiceUnavailable("invalid_streamed_sentence")
+                            audio = await self.tts.synthesize(sentence.strip())
+                            if epoch != self._epoch or self._closed:
+                                heard = False
+                                break
+                            if not await self.speaker.play(audio):
+                                heard = False
+                                break
+                            if epoch != self._epoch or self._closed:
+                                heard = False
+                                break
+                            spoken_parts.append(sentence.strip())
+                    response = " ".join(spoken_parts)
+                else:
+                    response = (await self.llm.respond(utterance, self.history)).strip()
+                    if epoch != self._epoch or self._closed or not response:
+                        continue
+                    audio = await self.tts.synthesize(response)
+                    if epoch != self._epoch or self._closed:
+                        continue
+                    heard = await self.speaker.play(audio)
+                if heard and response and epoch == self._epoch and not self._closed:
                     # Consent-gated notes depend on turns the other party
                     # could actually hear, not on STT/LLM speculative work.
                     delivered = getattr(self.llm, "on_turn_delivered", None)
