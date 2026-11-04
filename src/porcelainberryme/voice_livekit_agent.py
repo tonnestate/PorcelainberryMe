@@ -477,7 +477,8 @@ def make_call_responder(*, base_llm, tenant: str, agent_id: str,
 async def call_human(*, target: str, tenant: str, control_token: str,
                      whisper_model: str, ollama_model: str,
                      piper_binary: str, piper_model: str,
-                     agent_id: str, request_id: str):
+                     agent_id: str, request_id: str,
+                     control_token_factory=None):
     """Call a registered, opted-in Internet user, never an E.164 number."""
     if not target or target.startswith("+") or not tenant or not agent_id:
         raise ValueError("internet_identity_required_not_public_phone_number")
@@ -491,7 +492,11 @@ async def call_human(*, target: str, tenant: str, control_token: str,
         whisper_model=whisper_model, ollama_model=ollama_model,
         piper_binary=piper_binary, piper_model=piper_model,
     )
-    client = CallControlClient(control_token)
+    # A supervisor can rotate short-lived scoped agent tokens throughout
+    # a long call instead of reusing a bearer that may expire mid-session.
+    client = (CallControlClient(control_token)
+              if control_token_factory is None
+              else CallControlClient(control_token, token_factory=control_token_factory))
     llm = make_call_responder(
         base_llm=base_llm, tenant=tenant, agent_id=agent_id,
         caller=target, client=client,
