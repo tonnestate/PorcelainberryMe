@@ -170,7 +170,8 @@ class MCPCallVisibility:
         tools = ["porcelainberryme_capabilities",
                  "porcelainberryme_active_calls",
                  "porcelainberryme_call_status",
-                 "porcelainberryme_call_events"]
+                 "porcelainberryme_call_events",
+                 "porcelainberryme_call_report"]
         if self.can_place_calls:
             tools += ["porcelainberryme_call_me",
                       "porcelainberryme_call_me_status"]
@@ -237,6 +238,57 @@ class MCPCallVisibility:
             "truncated": len(events) > limit,
         }
 
+    async def call_report(self) -> dict:
+        """Authenticated last-seven-day counters with strict field whitelist.
+
+        The voice model must never receive customer identifiers, transcripts,
+        raw backend responses or arbitrary reporting SQL.
+        """
+        await self._verify_identity()
+        source = await self._control.request("GET", "/v1/ip-calls/report")
+        if (not isinstance(source, dict)
+                or source.get("schema") != "porcelainberryme.reporting.calls.v1"
+                or source.get("scope") != "authenticated_participant_only"
+                or source.get("timezone") != "UTC"):
+            raise RuntimeError("mcp_call_report_contract_invalid")
+        counters = (
+            "calls", "incoming", "outgoing", "agent_initiated",
+            "accepted_confirmed", "declined", "timed_out", "ended",
+            "ringing", "active", "transferred_confirmed",
+            "duration_known_calls", "control_session_seconds",
+            "acceptance_unverified",
+        )
+        daily_keys = (
+            "calls", "incoming", "outgoing", "accepted_confirmed",
+            "declined", "timed_out", "transferred_confirmed",
+            "control_session_seconds",
+        )
+        def numbers(row, allowed):
+            if not isinstance(row, dict):
+                raise RuntimeError("mcp_call_report_contract_invalid")
+            if any(type(row.get(key)) is not int or not 0 <= row[key] <= 1000000000
+                   for key in allowed):
+                raise RuntimeError("mcp_call_report_contract_invalid")
+            return {key: row[key] for key in allowed}
+        metrics = numbers(source.get("metrics"), counters)
+        day_rows = source.get("daily")
+        if not isinstance(day_rows, list) or len(day_rows) > 31:
+            raise RuntimeError("mcp_call_report_contract_invalid")
+        daily = []
+        for row in day_rows:
+            if (not isinstance(row, dict) or not isinstance(row.get("day"), str)
+                    or not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", row["day"])):
+                raise RuntimeError("mcp_call_report_contract_invalid")
+            daily.append({"day": row["day"], **numbers(row, daily_keys)})
+        return {
+            "schema": "porcelainberryme.mcp.call-report.v1",
+            "scope": "authenticated_participant_only",
+            "period": "last_7_days_utc",
+            "metrics": metrics,
+            "daily": daily,
+            "duration_basis": "accepted_to_closed_control_state_not_audio",
+        }
+
     async def call_status(self, call_id: str) -> dict:
         if not isinstance(call_id, str) or not _CALL_ID.fullmatch(call_id):
             raise ValueError("mcp_invalid_call_id")
@@ -275,6 +327,11 @@ def build_server(visibility: MCPCallVisibility):
     async def porcelainberryme_call_events(after: int = 0, limit: int = 30) -> str:
         """Poll authorized call events without transcripts or skipped cursors."""
         return json.dumps(await visibility.call_events(after, limit), ensure_ascii=False)
+
+    @mcp.tool()
+    async def porcelainberryme_call_report() -> str:
+        """Read sanitized seven-day statistics for the authenticated participant."""
+        return json.dumps(await visibility.call_report(), ensure_ascii=False)
 
     @mcp.tool()
     async def porcelainberryme_call_status(call_id: str) -> str:
