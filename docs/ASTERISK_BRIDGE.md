@@ -190,6 +190,36 @@ the configured fixed Stasis route and uses authenticated
 Passing those HTTP checks confirms the ARI API and Stasis application
 are visible, **not** that a carrier or real call works.
 
+## Further supervision, interruption and first-response safeguards
+
+The default single-call Stasis listener now preflights and holds one
+installed speech model set **before** subscribing to new Stasis events.
+It reuses these resources across sequential calls rather than loading
+Whisper during an incoming ring. Hosts explicitly setting
+`PB_ASTERISK_MAX_CALLS` above one retain independent per-call models to
+avoid mixing mutable model/voice state between concurrent conversations.
+No actual model inference latency is measured by synthetic CI.
+
+`SIGTERM` and `SIGINT` are handled inside the listener event loop.
+The worker stops accepting new events, cancels owned call/overload tasks,
+and executes existing ARI media cleanup before the process exits.
+A returned caller can generate `StasisEnd` *before* the
+`/continue` HTTP acknowledgement; the return operation is now protected
+from cancelling itself during that handshake. Other call hangups still
+cancel ongoing media immediately.
+
+The PCM speaker treats any failed `FLUSH_MEDIA` operation as an unsafe
+playback state. It refuses new audio after that failure, rather than
+risking speech from an interrupted turn leaking into the next turn.
+The existing Piper subprocess also drains its discarded buffered stdout
+after being killed on interruption; this prevents a deadlocked
+`Process.wait()` when an OS pipe is full.
+
+These invariants are covered by explicit cancellation/backpressure,
+StasisEnd-during-continue, SIGTERM and prewarmed-model regression tests.
+Deployment still requires actual Asterisk, local model and real device
+verification, not a CI-only release declaration.
+
 The CI test `tests/test_asterisk_stasis_e2e.py` covers, with actual
 loopback HTTP/WebSocket transport and synthetic installed-model
 substitutes, the complete authorized
