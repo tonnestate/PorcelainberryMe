@@ -87,6 +87,9 @@ class EnergyTurnDetector:
         self.quiet_frames = 0
         self.started = False
 
+    def _is_speech(self, pcm: bytes) -> bool:
+        return self.rms(pcm) >= self.threshold
+
     @staticmethod
     def rms(pcm: bytes) -> float:
         if len(pcm) != FRAME_BYTES:
@@ -98,7 +101,9 @@ class EnergyTurnDetector:
         return math.sqrt(squares / (len(pcm) // 2))
 
     def push(self, pcm: bytes) -> tuple[bool, bytes | None]:
-        voiced = self.rms(pcm) >= self.threshold
+        if len(pcm) != FRAME_BYTES:
+            raise ValueError("invalid_voice_frame_size")
+        voiced = self._is_speech(pcm)
         if not self.started:
             self.leading.append(pcm)
             self.consecutive_voice = self.consecutive_voice + 1 if voiced else 0
@@ -129,6 +134,36 @@ class EnergyTurnDetector:
         self.consecutive_voice = 0
         self.quiet_frames = 0
         self.started = False
+
+
+class WebRTCTurnDetector(EnergyTurnDetector):
+    """Opt-in WebRTC VAD on the existing 16-kHz/20-ms PCM stream.
+
+    Keeps the bounded pre-roll and end-of-turn state machine; only the
+    speech/non-speech classification is delegated to the optional local
+    webrtcvad-wheels binary. No model download, server or network request.
+    """
+
+    def __init__(self, *, mode: int = 1, **kwargs):
+        if type(mode) is not int or mode not in (0, 1, 2, 3):
+            raise ValueError("invalid_webrtc_vad_mode")
+        try:
+            import webrtcvad
+        except ImportError as exc:
+            raise LocalVoiceUnavailable("local_webrtc_vad_not_installed") from exc
+        self._vad_factory = webrtcvad.Vad
+        self._vad_mode = mode
+        self._vad = self._vad_factory(mode)
+        super().__init__(**kwargs)
+
+    def _is_speech(self, pcm: bytes) -> bool:
+        return bool(self._vad.is_speech(pcm, SAMPLE_RATE))
+
+    def reset(self):
+        # Reset the native VAD's acoustic state after a completed turn or
+        # remote microphone replacement; never bleed it across tracks.
+        super().reset()
+        self._vad = self._vad_factory(self._vad_mode)
 
 
 class LocalFasterWhisper:
@@ -331,8 +366,14 @@ class VoiceTurnEngine:
 
     def __init__(self, stt: Transcriber, llm: Responder, tts: Synthesizer,
                  speaker: Speaker, *, threshold: int = 600,
-                 on_unavailable: Callable[[], None] | None = None):
-        self.detector = EnergyTurnDetector(threshold=threshold)
+                 on_unavailable: Callable[[], None] | None = None,
+                 vad_backend: str = "energy"):
+        if vad_backend == "energy":
+            self.detector = EnergyTurnDetector(threshold=threshold)
+        elif vad_backend == "webrtc":
+            self.detector = WebRTCTurnDetector()
+        else:
+            raise ValueError("invalid_vad_backend")
         self.stt, self.llm, self.tts, self.speaker = stt, llm, tts, speaker
         self.history: list[dict] = []
         self._epoch = 0
