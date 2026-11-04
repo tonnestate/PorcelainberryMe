@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import signal
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import unittest
 
 from porcelainberryme.asterisk_ari import AsteriskARI
@@ -52,6 +52,24 @@ def listener(*, port=8088, max_calls=1):
 
 
 class TrustedStasisTests(unittest.IsolatedAsyncioTestCase):
+    async def test_single_call_preflight_warms_model_once_before_listening(self):
+        worker = listener(max_calls=1)
+        warmed = (object(), object(), object())
+        with patch("porcelainberryme.asterisk_stasis.prepare_local_voice",
+                   new_callable=AsyncMock, return_value=warmed) as load:
+            await worker._prepare_resources_once()
+            await worker._prepare_resources_once()
+        load.assert_awaited_once()
+        self.assertIs(worker._prepared_resources, warmed)
+
+    async def test_parallel_host_never_shares_prepared_model_state(self):
+        worker = listener(max_calls=2)
+        with patch("porcelainberryme.asterisk_stasis.prepare_local_voice",
+                   new_callable=AsyncMock) as load:
+            await worker._prepare_resources_once()
+        load.assert_not_awaited()
+        self.assertIsNone(worker._prepared_resources)
+
     async def test_supervisor_sigterm_requests_clean_session_shutdown(self):
         worker = listener()
         registered, unregistered = {}, []
@@ -434,6 +452,7 @@ class NetworkStasisTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_real_local_websocket_delivers_only_authorized_route_once(self):
         worker = listener(port=self.port)
+        worker._prepare_resources_once = AsyncMock()
         stop = asyncio.Event()
         dispatched = []
 
@@ -450,6 +469,7 @@ class NetworkStasisTests(unittest.IsolatedAsyncioTestCase):
     async def test_wrong_ari_auth_does_not_loop_as_temporary_outage(self):
         self.reject = True
         worker = listener(port=self.port)
+        worker._prepare_resources_once = AsyncMock()
         with self.assertRaisesRegex(StasisListenerError, "configuration_refused"):
             await asyncio.wait_for(worker.serve(), 4)
         self.assertEqual(worker.dispatched, 0)
