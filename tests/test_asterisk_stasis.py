@@ -218,7 +218,7 @@ class TrustedStasisTests(unittest.IsolatedAsyncioTestCase):
             )))
         await asyncio.wait_for(worker.close(), 3)
         self.assertEqual(len(returned), 9)
-        self.assertEqual(worker._busy_pending, [])
+        self.assertEqual(len(worker._busy_pending), 0)
         self.assertFalse(worker.accept_event(stasis_event(channel("PJSIP-new.1"))))
 
     async def test_exhausted_overload_queue_reports_but_does_not_spawn_unbounded(self):
