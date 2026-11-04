@@ -501,6 +501,72 @@ class LocalVoiceTests(unittest.IsolatedAsyncioTestCase):
                     self.fail("previous native inference never released its slot")
                 self.assertEqual(result, "Hallo")
 
+    async def test_barge_in_cancels_stalled_ollama_stream_without_release(self):
+        blocked = asyncio.Event()
+        closed = asyncio.Event()
+
+        class StalledStream:
+            async def stream_sentences(self, text, history):
+                if text == "Satz 1":
+                    try:
+                        yield "Erste Antwort."
+                        blocked.set()
+                        await asyncio.Event().wait()
+                    finally:
+                        closed.set()
+                else:
+                    yield "Zweite Antwort."
+
+        engine = VoiceTurnEngine(
+            FakeSTT(), StalledStream(), FakeTTS(), FakeSpeaker(),
+        )
+        await submit_phrase(engine)
+        await asyncio.wait_for(blocked.wait(), 1)
+        await submit_phrase(engine)
+        await asyncio.wait_for(engine._worker, 1)
+        self.assertTrue(closed.is_set())
+        self.assertEqual(engine.turns_completed, 1)
+        self.assertEqual(engine.history, [
+            {"role": "user", "content": "Satz 2"},
+            {"role": "assistant", "content": "Zweite Antwort."},
+        ])
+        await engine.close()
+
+    async def test_barge_in_cancels_stalled_piper_audio_generator(self):
+        blocked = asyncio.Event()
+        closed = asyncio.Event()
+
+        class StreamingTTS:
+            streaming_enabled = True
+
+            async def synthesize(self, text):
+                raise AssertionError("complete TTS should not run")
+
+            async def stream_audio(self, text):
+                if text == "Antwort auf Satz 1":
+                    try:
+                        yield AudioPacket(audio_frame(), 16000)
+                        blocked.set()
+                        await asyncio.Event().wait()
+                    finally:
+                        closed.set()
+                else:
+                    yield AudioPacket(audio_frame(), 16000)
+
+        speaker = FakeSpeaker()
+        engine = VoiceTurnEngine(
+            FakeSTT(), FakeLLM(), StreamingTTS(), speaker,
+        )
+        await submit_phrase(engine)
+        await asyncio.wait_for(blocked.wait(), 1)
+        await submit_phrase(engine)
+        await asyncio.wait_for(engine._worker, 1)
+        self.assertTrue(closed.is_set())
+        self.assertEqual(engine.turns_completed, 1)
+        self.assertEqual(len(speaker.packets), 2)
+        self.assertEqual(engine.history[0]["content"], "Satz 2")
+        await engine.close()
+
     async def test_opt_in_webrtc_vad_uses_20ms_frames_and_resets_state(self):
         created = []
 
