@@ -29,15 +29,17 @@ class MCPDurableTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(temp.cleanup)
         self.store = DurableCallJobs(Path(temp.name) / "calls.sqlite")
         self.client = FakeControl()
+        self.consent_sequence = 0
         self.bridge = MCPCallVisibility(
             self.client, tenant="tenantA", subject="agent", role="agent",
             call_target="owner", job_store=self.store,
         )
 
     def approve(self):
+        self.consent_sequence += 1
         return self.store.approve(
             tenant="tenantA", agent="agent", recipient="owner",
-            consent_reference="trusted-host-approved-001",
+            consent_reference=f"trusted-host-approved-{self.consent_sequence:03d}",
         )
 
     async def test_repeated_approved_calls_same_mcp_process(self):
