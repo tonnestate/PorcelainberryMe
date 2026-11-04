@@ -137,6 +137,25 @@ class ReleaseGateTests(unittest.TestCase):
             invalid = dict(self.env, PB_AGENT="not an identity")
             self.assertFalse(_authenticated_agent_control(invalid))
 
+    def test_default_release_command_cannot_accidentally_be_used_for_deploy(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from porcelainberryme.release_gate import main
+        from unittest.mock import patch
+        report = {
+            "configuration_passed": True, "runtime_checks_passed": True,
+            "production_accepted": False,
+        }
+        with patch("porcelainberryme.release_gate.evaluate", return_value=report), (
+                patch("sys.argv", ["porcelainberryme-release-gate", "--network"])), (
+                redirect_stdout(StringIO())):
+            self.assertEqual(main(), 3)
+        with patch("porcelainberryme.release_gate.evaluate", return_value=report), (
+                patch("sys.argv", ["porcelainberryme-release-gate",
+                                   "--network", "--preflight-only"])), (
+                redirect_stdout(StringIO())):
+            self.assertEqual(main(), 0)
+
     def test_mobile_and_pstn_require_independent_acceptance(self):
         report = evaluate(env=self.env, network=False,
                           require_mobile_push=True, require_pstn=True)
