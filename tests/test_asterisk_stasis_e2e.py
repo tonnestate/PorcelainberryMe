@@ -197,12 +197,16 @@ class StasisThroughMediaTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {
             "PB_ASTERISK_WS_USER": "", "PB_ASTERISK_WS_PASSWORD": "",
         }), patch(
-            "porcelainberryme.asterisk_ari.prepare_local_voice",
+            "porcelainberryme.asterisk_stasis.prepare_local_voice",
             new_callable=AsyncMock,
             return_value=(STT(), LLM(), TTS()),
-        ) as preflight:
+        ) as preflight, patch(
+            "porcelainberryme.asterisk_ari.prepare_local_voice",
+            new_callable=AsyncMock,
+        ) as cold_reload:
             await asyncio.wait_for(worker.serve(stop_event=stop), 10)
             preflight.assert_awaited_once()
+            cold_reload.assert_not_awaited()
 
         self.assertEqual(worker.dispatched, 1)
         self.assertEqual(worker.failed, 0)
