@@ -480,7 +480,20 @@ class LocalPiperVoice:
                     process.kill()
                 except ProcessLookupError:
                     pass
-                await process.wait()
+                # Asyncio Process.wait() can deadlock when the child's
+                # stdout PIPE still contains buffered audio. This occurs
+                # when callers interrupt a partially generated response:
+                # nobody is draining stdout after generator cancellation.
+                # communicate() drains the remaining bounded OS pipe after
+                # SIGKILL and reaps the process without playing stale audio.
+                # A hard limit also prevents hanging a call forever if a
+                # future Piper wrapper inherits its stdout descriptor.
+                try:
+                    await asyncio.wait_for(process.communicate(), timeout=2)
+                except asyncio.TimeoutError as exc:
+                    raise LocalVoiceUnavailable(
+                        "local_piper_process_cleanup_unconfirmed"
+                    ) from exc
 
     async def synthesize(self, text: str) -> AudioPacket:
         # Preserve the complete-response adapter for existing callers and
