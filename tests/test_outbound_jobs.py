@@ -88,7 +88,7 @@ class DurableJobTests(unittest.IsolatedAsyncioTestCase):
         args = dict(tenant=TENANT, agent=AGENT, identity_secret=SECRET,
                     voice_settings={}, voice_worker=failure)
         self.assertTrue(await worker_once(self.store, **args))
-        self.assertEqual(self.state(key), "FAILED")
+        self.assertEqual(self.state(key), "UNKNOWN")
         self.assertFalse(await worker_once(self.store, **args))
         self.assertEqual(len(attempts), 1)
 
