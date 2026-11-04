@@ -130,13 +130,32 @@ can be purged explicitly via host-only
 collector, message API polling, alternate WhatsApp login, or provider
 access is added.
 
-**Operational gap:** mirroring is deliberately best-effort and nonblocking
-for existing TonnEstate WhatsApp conversations. If PorcelainberryMe is
-down or a message is rejected, TonnEstate logs only a static diagnostic
-and continues the original reply. It does not yet have a durable retry
-outbox for the passive mirror; a production operator must add verified
-source replay or reconciliation before claiming gap-free message history.
-This repository does not assert that n8n already provides such replay.
+**Durable source recovery:** TonnEstate's complementary
+`porcelainberry_whatsapp_outbox.py` now writes each authorized inbound
+observation to its separate, private SQLite queue **before** any network
+I/O. If this listener is temporarily unavailable, its supervised
+TonnEstate worker retries the identical event with exponential backoff.
+The mirror accepts it at most once by content-bound provider message ID.
+An `ACKED` outbox record confirms remote mirror persistence, not a
+WhatsApp response or AI processing. The 10,000-record source capacity
+and source ingest outage remain explicit operational limits; if the
+queue fills or its disk is unavailable, TonnEstate must raise/alert a
+static failure and does not silently discard pending stored entries.
+Absolute source completeness still depends on verified upstream replay
+and monitoring for the capacity-exhaustion case.
+
+**Retention operations:** The new
+`python -m porcelainberryme.whatsapp_mirror prune` command performs
+host-only, tenant/owner-scoped cleanup after the configured 30-day
+mirror retention. The repository includes the corresponding hourly
+`deploy/systemd/porcelainberryme-whatsapp-mirror-prune.service.example`
+and `.timer.example` templates. The existing private 0600
+`PORCELAINBERRY_DB` must be used; the command cannot run when mirroring
+is disabled or when that file is not private. The separate TonnEstate
+outbox automatically prunes old **acknowledged** records during ingress,
+while never evicting unacknowledged messages. Operators must schedule
+maintenance and monitor any failed unit, rather than rely on opportunistic
+cleanup alone.
 
 The new endpoint and owner read view are covered by actual loopback
 HTTP, signature isolation, tenant fencing, replay, capacity, retention,
