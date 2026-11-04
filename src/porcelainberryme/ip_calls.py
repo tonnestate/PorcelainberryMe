@@ -58,6 +58,30 @@ def _identity(value: str) -> str:
     return value
 
 
+def validate_livekit_url(value: str) -> str:
+    """Require TLS for any non-local RTC endpoint and reject URL credentials.
+
+    Media room JWTs are sensitive bearer credentials. A misconfigured
+    remote ws:// server must never receive them over cleartext transport.
+    """
+    if not isinstance(value, str) or any(c.isspace() for c in value):
+        raise ValueError("invalid_media_url")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("invalid_media_url") from exc
+    if (parsed.scheme not in ("ws", "wss")
+            or not parsed.hostname or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or parsed.path not in ("", "/")
+            or port == 0):
+        raise ValueError("invalid_media_url")
+    if (parsed.scheme == "ws"
+            and parsed.hostname.lower() not in ("localhost", "127.0.0.1", "::1")):
+        raise ValueError("unencrypted_remote_media_url")
+    return value
+
+
 def _b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
 
@@ -140,8 +164,7 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                 raise ValueError("media_key_required")
             if not isinstance(media_secret, str) or len(media_secret) < 32:
                 raise ValueError("media_secret_too_short")
-            if not isinstance(media_url, str) or not media_url.startswith(("ws://", "wss://")):
-                raise ValueError("invalid_media_url")
+            validate_livekit_url(media_url)
             if identity_secret == media_secret:
                 raise ValueError("separate_signing_keys_required")
         self.path = path
