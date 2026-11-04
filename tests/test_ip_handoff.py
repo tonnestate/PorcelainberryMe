@@ -173,6 +173,50 @@ class HandoffStateTests(unittest.TestCase):
             self.db.decide_handoff(self.agent, call["id"], "complete")
         self.assertEqual(self.db.status(self.client, call["id"])["state"], "ACTIVE")
 
+    def test_staff_dnd_revokes_already_accepted_handoff_media_not_customer(self):
+        call = self.active()
+        self.offer(call["id"])
+        self.db.decide_handoff(self.staff, call["id"], "accept")
+        staff_token = self.db.media_credentials(self.staff, call["id"])
+        self.assertGreater(staff_token["expires_at"], self.now[0])
+        # The employee changes their own preference after accepting.
+        self.db.update_preferences(self.staff, {"do_not_disturb": True})
+        state = self.db.status(self.agent, call["id"])
+        self.assertEqual(state["state"], "ACTIVE")
+        self.assertEqual(state["handoff"]["state"], "CANCELLED")
+        with self.assertRaisesRegex(CallError, "handoff_not_accepted"):
+            self.db.media_credentials(self.staff, call["id"])
+        kicked = []
+        result = self.db.reconcile_handoff_kicks(
+            lambda room, participant: kicked.append((room, participant)),
+        )
+        self.assertEqual(result["reviewed"], 1)
+        self.assertEqual(result["completed"], 0)
+        self.assertEqual(kicked[0][0], "pb_" + call["id"])
+        # The already accepted human-to-agent conversation stays alive.
+        self.assertEqual(self.db.status(self.client, call["id"])["state"], "ACTIVE")
+        self.now[0] += 20
+        final = self.db.reconcile_handoff_kicks(
+            lambda room, participant: kicked.append((room, participant)),
+        )
+        self.assertEqual(final["completed"], 1)
+        self.assertEqual(kicked[0][1], kicked[-1][1])
+
+    def test_staff_dnd_revokes_offered_handoff_without_media(self):
+        call = self.active()
+        self.offer(call["id"])
+        self.db.set_do_not_disturb("enterprise", "employee", True)
+        self.assertEqual(
+            self.db.status(self.agent, call["id"])["handoff"]["state"],
+            "CANCELLED",
+        )
+        with self.assertRaisesRegex(CallError, "invalid_handoff_transition"):
+            self.db.decide_handoff(self.staff, call["id"], "accept")
+        self.assertEqual(
+            self.db.reconcile_handoff_kicks(lambda room, identity: None)["reviewed"],
+            0,
+        )
+
     def test_staff_dnd_or_busy_blocks_offer(self):
         call = self.active()
         self.db.set_do_not_disturb("enterprise", "employee", True)
