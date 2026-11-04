@@ -294,10 +294,12 @@ async def worker_once(store: DurableCallJobs, *, tenant: str, agent: str,
         ))
         raise
     except Exception:
-        # Network ambiguity and model failures must NEVER cause blind redial.
+        # The invitation may already have reached LiveKit even if a later
+        # network/media step failed. Do not claim definitive non-delivery.
+        # Reconciliation is required; the approval must NEVER be redialed.
         await asyncio.to_thread(
             store.finish, approval_id=job["approval_id"],
-            tenant=tenant, agent=agent, state="FAILED",
+            tenant=tenant, agent=agent, state="UNKNOWN",
         )
     else:
         await asyncio.to_thread(
