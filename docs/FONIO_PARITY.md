@@ -11,6 +11,22 @@ Sources:
 - https://www.fonio.ai/de/news-cool-stuff/inbound-webhook-kundendaten-und-dynamische-informationen-bei-anrufen-abrufen/
 - https://app.fonio.ai/api/docs
 
+## Reporting milestone (2026-11-04)
+
+PorcelainberryMe now has a signed-participant-scoped reporting API, a
+read-only MCP KPI tool, a PWA call-report client and a numeric-only
+daily CSV export. Accepted-call timestamps persist for both outbound
+recipient acceptance and inbound autonomous agent claims, with
+existing-data migration and 30-day retention. See
+[REPORTING.md](REPORTING.md).
+
+This is **NOT Fonio analytics parity**. Fonio currently offers a
+finished workspace dashboard, call outcomes, transcript/summary,
+recordings, campaign reporting and minute costs; none of these can be
+substituted by guessed AI results. The present stats are valid only for
+participant-authorized call-control outcomes, not full tenant/customer
+business intelligence or PSTN billing.
+
 ## Mandatory parity gates
 
 | Function | Fonio public claim | PorcelainberryMe as of this change | Release gate |
