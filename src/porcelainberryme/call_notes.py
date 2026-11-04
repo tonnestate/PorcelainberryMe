@@ -252,11 +252,16 @@ class ConsentedNotesResponder:
         elif command == REVOKE:
             self._delivered_consent = False
             self._delivered_utterances.clear()
-        elif (self._delivered_consent and self.consented
-              and len(self._delivered_utterances) < MAX_EXCERPTS):
+        elif self._delivered_consent and self.consented:
             statement = " ".join(utterance.strip().split())[:EXCERPT_CHARS]
-            if statement and statement not in self._delivered_utterances:
+            if statement:
+                # Keep the most recent bounded delivered turns. Unlike the
+                # LLM's rolling context, this cannot shift the consent
+                # boundary or resurrect earlier private speech.
+                if statement in self._delivered_utterances:
+                    self._delivered_utterances.remove(statement)
                 self._delivered_utterances.append(statement)
+                self._delivered_utterances = self._delivered_utterances[-MAX_EXCERPTS:]
 
     async def persist_if_consented(self, call_id: str,
                                   history: list[dict]) -> bool:
