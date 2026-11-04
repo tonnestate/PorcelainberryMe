@@ -14,6 +14,7 @@ import http.client
 import json
 import math
 from pathlib import Path
+import os
 import re
 import shutil
 import struct
@@ -398,8 +399,18 @@ class LocalPiperVoice:
         self.model_path = str(model)
         self.sample_rate = rate
         self.timeout = timeout
+        preference = os.environ.get("PB_LOCAL_PIPER_STREAM", "0")
+        if preference not in ("0", "1"):
+            raise ValueError("invalid_piper_stream_setting")
+        self.streaming_enabled = preference == "1"
 
-    async def synthesize(self, text: str) -> AudioPacket:
+    async def stream_audio(self, text: str):
+        """Stream bounded 100-ms PCM packets from local Piper stdout.
+
+        A fully completed packet may be played before Piper finishes the
+        remaining speech. The same local process is killed on cancellation,
+        interruption or an invalid/oversized response.
+        """
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 500:
             raise ValueError("invalid_speech_reply")
         process = await asyncio.create_subprocess_exec(
@@ -407,40 +418,57 @@ class LocalPiperVoice:
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        async def bounded_capture():
-            # communicate() would buffer unbounded stdout in RAM before the
-            # AudioPacket length check. Drain in bounded chunks instead.
+        packet_bytes = (self.sample_rate // 50) * 2 * 5
+        pending = bytearray()
+        total = 0
+        emitted = False
+        try:
             process.stdin.write((text.strip() + "\n").encode("utf-8"))
-            await process.stdin.drain()
+            await asyncio.wait_for(process.stdin.drain(), timeout=self.timeout)
             process.stdin.close()
-            chunks = []
-            total = 0
             while True:
-                chunk = await process.stdout.read(65536)
-                if not chunk:
+                raw = await asyncio.wait_for(
+                    process.stdout.read(65536), timeout=self.timeout,
+                )
+                if not raw:
                     break
-                total += len(chunk)
+                total += len(raw)
                 if total > MAX_REPLY_BYTES:
                     raise LocalVoiceUnavailable("local_piper_output_too_large")
-                chunks.append(chunk)
-            await process.wait()
+                pending.extend(raw)
+                while len(pending) >= packet_bytes:
+                    packet = bytes(pending[:packet_bytes])
+                    del pending[:packet_bytes]
+                    emitted = True
+                    yield AudioPacket(packet, self.sample_rate)
+            await asyncio.wait_for(process.wait(), timeout=self.timeout)
             if process.returncode != 0:
                 raise LocalVoiceUnavailable("local_piper_failed")
-            return b"".join(chunks)
-
-        try:
-            output = await asyncio.wait_for(
-                bounded_capture(), timeout=self.timeout,
-            )
-            return AudioPacket(output, self.sample_rate)
+            if len(pending) % 2:
+                raise LocalVoiceUnavailable("local_piper_invalid_pcm")
+            if pending:
+                emitted = True
+                yield AudioPacket(bytes(pending), self.sample_rate)
+            if not emitted:
+                raise LocalVoiceUnavailable("local_piper_empty_output")
         except asyncio.TimeoutError as exc:
             raise LocalVoiceUnavailable("local_piper_timeout") from exc
         finally:
-            # The process must not continue using host CPU/RAM after a
-            # cancelled speech turn or a failed size/time limit.
             if process.returncode is None:
-                process.kill()
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
                 await process.wait()
+
+    async def synthesize(self, text: str) -> AudioPacket:
+        # Preserve the complete-response adapter for existing callers and
+        # for all installations without explicit progressive speech opt-in.
+        chunks = []
+        async with aclosing(self.stream_audio(text)) as stream:
+            async for packet in stream:
+                chunks.append(packet.pcm)
+        return AudioPacket(b"".join(chunks), self.sample_rate)
 
 
 class VoiceTurnEngine:
@@ -498,6 +526,27 @@ class VoiceTurnEngine:
         self.detector.reset()
         self.speaker.interrupt()
 
+    async def _speak_response(self, response: str, epoch: int) -> bool:
+        """Keep turn delivery fenced during progressive local speech."""
+        stream_audio = getattr(self.tts, "stream_audio", None)
+        if (getattr(self.tts, "streaming_enabled", False)
+                and callable(stream_audio)):
+            audible = False
+            async with aclosing(stream_audio(response)) as packets:
+                async for packet in packets:
+                    if epoch != self._epoch or self._closed:
+                        return False
+                    if not await self.speaker.play(packet):
+                        return False
+                    if epoch != self._epoch or self._closed:
+                        return False
+                    audible = True
+            return audible and epoch == self._epoch and not self._closed
+        audio = await self.tts.synthesize(response)
+        if epoch != self._epoch or self._closed:
+            return False
+        return await self.speaker.play(audio)
+
     async def _drain(self):
         while self._pending is not None and not self._closed:
             pcm, self._pending = self._pending, None
@@ -521,11 +570,7 @@ class VoiceTurnEngine:
                                 break
                             if not isinstance(sentence, str) or not sentence.strip():
                                 raise LocalVoiceUnavailable("invalid_streamed_sentence")
-                            audio = await self.tts.synthesize(sentence.strip())
-                            if epoch != self._epoch or self._closed:
-                                heard = False
-                                break
-                            if not await self.speaker.play(audio):
+                            if not await self._speak_response(sentence.strip(), epoch):
                                 heard = False
                                 break
                             if epoch != self._epoch or self._closed:
@@ -537,10 +582,7 @@ class VoiceTurnEngine:
                     response = (await self.llm.respond(utterance, self.history)).strip()
                     if epoch != self._epoch or self._closed or not response:
                         continue
-                    audio = await self.tts.synthesize(response)
-                    if epoch != self._epoch or self._closed:
-                        continue
-                    heard = await self.speaker.play(audio)
+                    heard = await self._speak_response(response, epoch)
                 if heard and response and epoch == self._epoch and not self._closed:
                     # Consent-gated notes depend on turns the other party
                     # could actually hear, not on STT/LLM speculative work.
