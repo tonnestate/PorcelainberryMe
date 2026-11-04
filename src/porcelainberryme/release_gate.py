@@ -124,6 +124,40 @@ def _local_call_control() -> bool:
         conn.close()
 
 
+def _authenticated_agent_control(env) -> bool:
+    """A real signed agent token must be accepted by the running controller.
+
+    The only request is GET /whoami to 127.0.0.1:8874. The signing
+    secret/issued JWT never appears in logs, return values or stdout.
+    """
+    from .ip_calls import IDENTITY, mint_identity_token
+    tenant = env.get("PB_TENANT", "")
+    agent = env.get("PB_AGENT", "")
+    secret = env.get("PB_CALL_IDENTITY_SECRET", "")
+    if (not isinstance(tenant, str) or not IDENTITY.fullmatch(tenant)
+            or not isinstance(agent, str) or not IDENTITY.fullmatch(agent)
+            or not isinstance(secret, str) or len(secret) < 32):
+        return False
+    conn = http.client.HTTPConnection("127.0.0.1", 8874, timeout=2)
+    try:
+        bearer = mint_identity_token(secret, tenant, agent, "agent")
+        conn.request("GET", "/v1/ip-calls/whoami",
+                     headers={"Authorization": "Bearer " + bearer})
+        response = conn.getresponse()
+        body = response.read(4097)
+        if response.status != 200 or len(body) > 4096:
+            return False
+        verified = json.loads(body)
+        return (isinstance(verified, dict)
+                and verified.get("role") == "agent"
+                and verified.get("tenant") == tenant
+                and verified.get("subject") == agent)
+    except (OSError, ValueError, TypeError, http.client.HTTPException):
+        return False
+    finally:
+        conn.close()
+
+
 def _media_signaling(url: str) -> bool:
     try:
         validate_livekit_url(url)
@@ -152,6 +186,12 @@ def evaluate(*, env=None, network: bool = False,
     media_secret = env.get("LIVEKIT_API_SECRET", "")
     add("call_identity_signing_key",
         isinstance(identity, str) and len(identity) >= 32)
+    from .ip_calls import IDENTITY
+    add("trusted_agent_binding",
+        isinstance(env.get("PB_TENANT"), str)
+        and bool(IDENTITY.fullmatch(env["PB_TENANT"]))
+        and isinstance(env.get("PB_AGENT"), str)
+        and bool(IDENTITY.fullmatch(env["PB_AGENT"])))
     add("call_ledger_private_and_healthy",
         _sqlite_schema(env.get("PB_CALL_DB", ""), {
             "ip_calls", "ip_call_users", "ip_call_events", "ip_media_teardown",
@@ -201,6 +241,8 @@ def evaluate(*, env=None, network: bool = False,
     )
     network_results = [
         ("running_call_control_with_media", _local_call_control),
+        ("signed_agent_identity_accepted",
+         lambda: _authenticated_agent_control(env)),
         ("livekit_signaling_socket", lambda: _media_signaling(media_url)),
     ]
     if not approved_db:
