@@ -60,6 +60,37 @@ class InternetCallsTest(unittest.TestCase):
         with self.assertRaisesRegex(CallError, "media_backend_not_configured"):
             separate.media_credentials(self.bob, ringing["id"])
 
+    def test_remote_media_must_use_tls_without_url_embedded_secrets(self):
+        for url in (
+            "ws://livekit.example.org:7880",
+            "ws://192.168.1.15:7880",
+            "ws://user:secret@127.0.0.1:7880",
+            "wss://livekit.example.org:7880?access=secret",
+            "wss://livekit.example.org:7880/#token",
+            "wss://livekit.example.org:99999",
+            "wss://livekit.example.org/other",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    CallRegistry(
+                        str(Path(self.tmp.name) / "insecure.sqlite"),
+                        identity_secret=self.secret,
+                        media_key="local-test-key", media_secret=self.media_secret,
+                        media_url=url, clock=lambda: self.tick[0],
+                    )
+                with self.assertRaises(ValueError):
+                    LiveKitRoomTerminator(
+                        url, "local-test-key", self.media_secret,
+                    )
+        secure = CallRegistry(
+            str(Path(self.tmp.name) / "secure.sqlite"),
+            identity_secret=self.secret,
+            media_key="local-test-key", media_secret=self.media_secret,
+            media_url="wss://livekit.example.org",
+            clock=lambda: self.tick[0],
+        )
+        self.assertEqual(secure.media_url, "wss://livekit.example.org")
+
     def test_agent_can_initiate_unpaid_ip_call_not_pstn(self):
         ringing = self._ring(self.agent)
         self.assertTrue(ringing["agent_initiated"])
