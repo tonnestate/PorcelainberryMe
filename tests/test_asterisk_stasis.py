@@ -98,6 +98,60 @@ class TrustedStasisTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stopped.is_set())
         self.assertEqual(worker.failed, 0)
 
+    async def test_capacity_rejection_returns_only_verified_channel_to_dialplan(self):
+        worker = listener(max_calls=1)
+        active_started = asyncio.Event()
+        calls = []
+
+        async def active_call(channel_id):
+            active_started.set()
+            await asyncio.Event().wait()
+
+        async def ari_call(session, method, endpoint, query=None):
+            calls.append((method, endpoint))
+            if method == "GET":
+                return channel(endpoint.rsplit("/", 1)[-1])
+            return None
+
+        async def release_overloaded(channel_id):
+            await worker._return_caller(None, channel_id)
+
+        worker._serve_one = active_call
+        worker._reject_busy = release_overloaded
+        with patch.object(worker.ari, "_call", new=ari_call):
+            self.assertTrue(worker.accept_event(stasis_event()))
+            await asyncio.wait_for(active_started.wait(), 1)
+            self.assertFalse(worker.accept_event(
+                stasis_event(channel("PJSIP-1234.2")),
+            ))
+            # Replayed overload event cannot dispatch or issue another ARI
+            # continue; the original active voice worker stays running.
+            self.assertFalse(worker.accept_event(
+                stasis_event(channel("PJSIP-1234.2")),
+            ))
+            await asyncio.sleep(0.01)
+            self.assertEqual(calls, [
+                ("GET", "/channels/PJSIP-1234.2"),
+                ("POST", "/channels/PJSIP-1234.2/continue"),
+            ])
+            self.assertFalse(worker._calls["PJSIP-1234.1"].done())
+            self.assertEqual(worker.dispatched, 1)
+            await worker.close()
+
+    async def test_untrusted_overload_route_never_continues_caller(self):
+        worker = listener()
+        seen = []
+
+        async def ari_call(session, method, endpoint, query=None):
+            seen.append((method, endpoint))
+            return channel(context="other_context")
+
+        with patch.object(worker.ari, "_call", new=ari_call):
+            self.assertFalse(await worker._return_caller(
+                None, "PJSIP-1234.2",
+            ))
+        self.assertEqual(seen, [("GET", "/channels/PJSIP-1234.2")])
+
     async def test_stasis_end_immediately_cancels_only_owned_channel(self):
         worker = listener()
         started = asyncio.Event()
