@@ -7,7 +7,7 @@ The software owns its communication interfaces and AI-call orchestration;
 it does not automatically provide an E.164 telephone carrier or a deployed
 speech/media infrastructure.
 
-**Status:** source implementation. Automated CI has now verified real synthetic WebRTC audio and the real agent/VoiceTurnEngine pipeline against a self-hosted LiveKit server using fake local STT/LLM/TTS. No user-VPS deployment, actual German model conversation, iPhone background ringing or PSTN interconnection is verified. See [real media CI evidence](docs/REAL_MEDIA_EVIDENCE.md).
+**Status:** source implementation. Automated CI has verified synthetic WebRTC audio and the real agent/VoiceTurnEngine pipeline against a self-hosted LiveKit server using fake local STT/LLM/TTS. Production-hardened loopback ingress, a separate database readiness check, bounded SQL reporting and a read-only deployment release gate are now included. No user-VPS deployment, actual German model conversation, iPhone background ringing or PSTN interconnection is verified. See [production release gates](docs/PRODUCTION_READINESS.md) and [real media CI evidence](docs/REAL_MEDIA_EVIDENCE.md).
 
 ### Implemented
 
