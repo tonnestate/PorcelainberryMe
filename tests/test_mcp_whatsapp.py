@@ -260,6 +260,52 @@ class OwnerMCPTests(unittest.IsolatedAsyncioTestCase):
                          "Hello")
 
 
+    async def test_ambiguous_tonnestate_http_400_is_not_a_definite_rejection(self):
+        from io import BytesIO
+        from urllib.error import HTTPError
+
+        approval = self.approve(reference="verified-ambiguous-http-400")
+        error = HTTPError(
+            "http://127.0.0.1:5001/api/internal/v1/aurora/send",
+            400, "Upstream bridge may have sent", {}, BytesIO(b"{}"),
+        )
+        with patch("porcelainberryme.tonnestate_whatsapp.urlopen",
+                   side_effect=error) as sender:
+            self.assertEqual(
+                (await self.bridge.whatsapp_send(approval))["state"], "UNKNOWN"
+            )
+            self.assertEqual(
+                (await self.bridge.whatsapp_send_status(approval))["state"],
+                "UNKNOWN",
+            )
+            self.assertEqual(sender.call_count, 1)
+
+    async def test_host_retention_prunes_terminal_but_not_unknown(self):
+        terminal = self.approve(reference="verified-terminal-prune")
+        ambiguous = self.approve(reference="verified-unknown-prune")
+        with sqlite3.connect(self.approval_db) as db:
+            db.execute(
+                "UPDATE whatsapp_mcp_approvals SET state='ACCEPTED',"
+                " expires_at=0 WHERE approval_id=?", (terminal,),
+            )
+            db.execute(
+                "UPDATE whatsapp_mcp_approvals SET state='UNKNOWN',"
+                " expires_at=0 WHERE approval_id=?", (ambiguous,),
+            )
+        self.assertEqual(
+            self.store.prune_terminal(
+                tenant="tenantA", agent="owner_agent", sender=self.sender,
+                retention_days=30,
+            ), 1,
+        )
+        self.assertEqual(
+            (await self.bridge.whatsapp_send_status(ambiguous))["state"],
+            "UNKNOWN",
+        )
+        with self.assertRaisesRegex(PermissionError, "not_authorized"):
+            await self.bridge.whatsapp_send_status(terminal)
+
+
 class RealWhatsAppMCPProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_stdio_discovery_opt_in_only(self):
         try:
