@@ -18,8 +18,8 @@ from .ledger import Ledger
 
 _CALL_ID = re.compile(r"^[a-f0-9]{32}$")
 _PENDING_REPLY = (
-    "Der FruitStack bearbeitet Ihre letzte Anfrage noch. "
-    "Ein bestätigtes Ergebnis liegt nicht vor."
+    "Ihre letzte Anfrage wurde angenommen. "
+    "Ein bestätigtes Ergebnis liegt noch nicht vor."
 )
 _UNKNOWN_REPLY = (
     "Die Ausführung Ihrer letzten Anfrage ist nicht sicher bestätigt. "
