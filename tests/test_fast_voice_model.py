@@ -39,6 +39,21 @@ class FastVoiceModelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fast.max_tokens, 48)
             self.assertTrue(fast.disable_thinking)
 
+    async def test_fast_model_needs_no_separately_installed_heavy_model(self):
+        with patch.dict(os.environ, {
+            "PB_LOCAL_VAD": "energy", "PB_AGENT_KNOWLEDGE_DB": "",
+            "PB_LOCAL_VOICE_CHAT_MODEL": "fast:local",
+            "PB_LOCAL_VOICE_CHAT_MAX_TOKENS": "72",
+        }), patch("porcelainberryme.voice_livekit_agent.LocalFasterWhisper"), (
+                patch("porcelainberryme.voice_livekit_agent.LocalPiperVoice")), (
+                patch.object(LocalOllamaResponder, "preflight", new_callable=AsyncMock)):
+            _, responder, _ = await prepare_local_voice(
+                tenant="t", agent_id="a", whisper_model="whisper",
+                ollama_model="", piper_binary="piper", piper_model="de.onnx",
+            )
+        self.assertEqual(responder.model, "fast:local")
+        self.assertEqual(responder.max_tokens, 72)
+
     async def test_invalid_fast_budget_fails_closed(self):
         with patch.dict(os.environ, {
             "PB_LOCAL_VOICE_CHAT_MODEL": "fast:latest",
