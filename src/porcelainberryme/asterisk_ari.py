@@ -184,17 +184,24 @@ async def serve_authorized_ari_call(*, ari: AsteriskARI, session,
                                     stasis_app: str, authorize_channel,
                                     tenant: str, agent_id: str,
                                     whisper_model: str, ollama_model: str,
-                                    piper_binary: str, piper_model: str):
+                                    piper_binary: str, piper_model: str,
+                                    local_resources=None):
     """Bridge exactly one authorized existing SIP call to local speech.
 
-    Audio models are preflighted before Asterisk is asked to bridge media.
-    SIP/PSTN access and Stasis event ownership must already exist in host.
+    A supervised single-call listener may supply models already preflighted
+    before subscribing to Stasis. Otherwise each call initializes its own
+    isolated speech resources before ARI media side effects.
     """
-    resources = await prepare_local_voice(
-        tenant=tenant, agent_id=agent_id, whisper_model=whisper_model,
-        ollama_model=ollama_model, piper_binary=piper_binary,
-        piper_model=piper_model,
-    )
+    if local_resources is None:
+        resources = await prepare_local_voice(
+            tenant=tenant, agent_id=agent_id, whisper_model=whisper_model,
+            ollama_model=ollama_model, piper_binary=piper_binary,
+            piper_model=piper_model,
+        )
+    else:
+        if not isinstance(local_resources, tuple) or len(local_resources) != 3:
+            raise ValueError("trusted_prepared_asterisk_voice_required")
+        resources = local_resources
     binding = await ari.prepare(
         session, caller_channel_id=caller_channel_id,
         stasis_app=stasis_app, authorize_channel=authorize_channel,
