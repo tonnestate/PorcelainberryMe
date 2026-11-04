@@ -7,6 +7,7 @@ A passing configuration check is NOT live smartphone/PSTN acceptance.
 from __future__ import annotations
 
 import argparse
+import base64
 from contextlib import closing
 import http.client
 import json
@@ -169,6 +170,59 @@ def _media_signaling(url: str) -> bool:
         return False
 
 
+def _asterisk_stasis_configured(env) -> bool:
+    """Validate a host-controlled Stasis route without exposing credentials."""
+    from .asterisk_ari import AsteriskARI
+    from .asterisk_stasis import TrustedStasisRoute
+    if env.get("PB_ASTERISK_STASIS_ENABLED") != "1":
+        return False
+    try:
+        AsteriskARI(
+            user=env.get("PB_ASTERISK_ARI_USER", ""),
+            password=env.get("PB_ASTERISK_ARI_PASSWORD", ""),
+            port=int(env.get("PB_ASTERISK_ARI_PORT", "8088")),
+        )
+        TrustedStasisRoute(
+            app=env.get("PB_ASTERISK_STASIS_APP", ""),
+            context=env.get("PB_ASTERISK_TRUSTED_CONTEXT", ""),
+            extension=env.get("PB_ASTERISK_TRUSTED_EXTENSION", ""),
+        )
+        return True
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
+def _local_asterisk_ari(env) -> bool:
+    """Authenticated, read-only Asterisk ARI probe over loopback.
+
+    REST API availability is not proof that the SIP trunk receives calls,
+    that Stasis is subscribed, or that the telephone owner consented.
+    """
+    if not _asterisk_stasis_configured(env):
+        return False
+    try:
+        port = int(env.get("PB_ASTERISK_ARI_PORT", "8088"))
+        user = env["PB_ASTERISK_ARI_USER"]
+        password = env["PB_ASTERISK_ARI_PASSWORD"]
+        bearer = base64.b64encode(
+            (user + ":" + password).encode("utf-8")).decode("ascii")
+        with closing(http.client.HTTPConnection(
+                "127.0.0.1", port, timeout=2)) as conn:
+            conn.request("GET", "/ari/asterisk/info",
+                         headers={"Authorization": "Basic " + bearer})
+            response = conn.getresponse()
+            body = response.read(8193)
+            if response.status != 200 or len(body) > 8192:
+                return False
+            data = json.loads(body)
+            return isinstance(data, dict) and isinstance(
+                data.get("system"), dict,
+            )
+    except (OSError, ValueError, TypeError, KeyError,
+            http.client.HTTPException):
+        return False
+
+
 def evaluate(*, env=None, network: bool = False,
              require_mobile_push: bool = True,
              require_pstn: bool = False) -> dict:
@@ -228,6 +282,10 @@ def evaluate(*, env=None, network: bool = False,
     add("mcp_rotatable_token_private",
         _private_regular_file(env.get("PB_MCP_CALL_TOKEN_FILE", "")))
 
+    if require_pstn:
+        add("asterisk_stasis_route_configured",
+            _asterisk_stasis_configured(env))
+
     if require_mobile_push:
         add("mobile_push_config_present",
             all(isinstance(env.get(key), str) and bool(env.get(key)) for key in (
@@ -249,6 +307,11 @@ def evaluate(*, env=None, network: bool = False,
         network_results.append((
             "installed_local_ollama_model",
             lambda: _local_ollama_model(llm_model),
+        ))
+    if require_pstn:
+        network_results.append((
+            "authenticated_local_asterisk_ari",
+            lambda: _local_asterisk_ari(env),
         ))
     for key, probe in network_results:
         checks.append({
