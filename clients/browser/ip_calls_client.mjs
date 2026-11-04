@@ -69,12 +69,33 @@ export class IPCallClient {
     roomFactory,
     fetchImpl = globalThis.fetch,
     clock = () => Date.now(),
+    requestTimeoutMs = 10000,
   }) {
-    if (!apiBase || !identityToken || typeof fetchImpl !== 'function') {
+    if (typeof apiBase !== 'string' || typeof identityToken !== 'string'
+        || !identityToken || typeof fetchImpl !== 'function') {
       throw new Error('api_url_token_and_fetch_required');
+    }
+    if (!Number.isSafeInteger(requestTimeoutMs)
+        || requestTimeoutMs < 1000 || requestTimeoutMs > 30000) {
+      throw new Error('invalid_call_request_timeout');
+    }
+    let parsed;
+    try {
+      parsed = new URL(apiBase);
+    } catch {
+      throw new Error('invalid_call_api_origin');
+    }
+    // Signed identity credentials may never traverse cleartext off-host.
+    // Reject URL userinfo/query/fragment rather than sending a bearer to
+    // a redirect or untrusted origin; HTTPS reverse proxies are supported.
+    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+    if ((parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback))
+        || parsed.username || parsed.password || parsed.search || parsed.hash) {
+      throw new Error('invalid_call_api_origin');
     }
     this.base = apiBase.replace(/\/+$/, '');
     this.token = identityToken;
+    this.requestTimeoutMs = requestTimeoutMs;
     this.onCallEvent = onCallEvent || (() => {});
     this.onRemoteAudio = onRemoteAudio || (() => {});
     this.roomFactory = roomFactory || null;
@@ -90,22 +111,59 @@ export class IPCallClient {
   }
 
   async request(method, endpoint, data) {
-    const response = await this.fetchImpl(this.base + endpoint, {
-      method,
-      headers: {
-        Authorization: 'Bearer ' + this.token,
-        ...(data === undefined ? {} : { 'Content-Type': 'application/json' }),
-      },
-      ...(data === undefined ? {} : { body: JSON.stringify(data) }),
-      cache: 'no-store',
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      const error = new Error(payload?.error || 'ip_call_http_error');
-      error.status = response.status;
-      throw error;
+    if (!['GET', 'POST', 'DELETE'].includes(method)
+        || typeof endpoint !== 'string' || !endpoint.startsWith('/')
+        || endpoint.startsWith('//') || endpoint.includes('#')) {
+      throw new Error('invalid_call_api_request');
     }
-    return payload;
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.requestTimeoutMs);
+    try {
+      const response = await this.fetchImpl(this.base + endpoint, {
+        method,
+        headers: {
+          Authorization: 'Bearer ' + this.token,
+          ...(data === undefined ? {} : { 'Content-Type': 'application/json' }),
+        },
+        ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+        cache: 'no-store',
+        redirect: 'error',
+        signal: controller.signal,
+      });
+      // A saturated local control server legitimately replies with HTTP 503
+      // and an EMPTY body. Do not misreport that as a JSON syntax error.
+      let payload;
+      try {
+        payload = await response.json();
+      } catch {
+        if (response.ok) throw new Error('ip_call_invalid_json_response');
+        payload = {};
+      }
+      if (!response.ok) {
+        const error = new Error(
+          typeof payload?.error === 'string'
+            ? payload.error : 'ip_call_http_error'
+        );
+        error.status = response.status;
+        throw error;
+      }
+      return payload;
+    } catch (error) {
+      if (timedOut) {
+        const timeout = new Error('ip_call_request_timeout');
+        // A timed-out mutation may have succeeded server-side. Upstream
+        // callers must reconcile by ID, never mint a fresh dial ID.
+        timeout.outcomeUncertain = method !== 'GET';
+        throw timeout;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
