@@ -77,7 +77,13 @@ class AsteriskPcmSpeaker:
         self._flush_tasks.discard(task)
         try:
             task.result()
-        except (OSError, RuntimeError, asyncio.CancelledError):
+        except asyncio.CancelledError:
+            self._flush_failed = True
+        except Exception:
+            # WebSocket libraries raise ClientError/ValueError and other
+            # non-OSError exceptions on failed sends. A failed FLUSH must
+            # NEVER be mistaken for an empty playback queue; fail closed
+            # rather than allowing the next answer behind stale audio.
             self._flush_failed = True
 
     async def play(self, packet: AudioPacket) -> bool:
