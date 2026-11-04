@@ -441,7 +441,20 @@ export class CallConsoleController {
         throw new Error('another_call_in_progress');
       }
       if (this.state.selfCallApprovalId) {
-        throw new Error('self_call_already_requested');
+        if (typeof this.client.selfCallStatus !== 'function') {
+          throw new Error('self_call_status_unavailable');
+        }
+        const last = await this.client.selfCallStatus(
+          this.state.selfCallApprovalId,
+        );
+        if (!['FINISHED_UNVERIFIED', 'UNKNOWN', 'FAILED', 'EXPIRED', 'REVOKED']
+              .includes(last.state)) {
+          throw new Error('self_call_already_requested');
+        }
+        // A separate, explicit new click can authorize a fresh request
+        // only once the earlier durable job is really terminal.
+        this._update({ selfCallApprovalId: null });
+        this._persistSelfCall();
       }
       if (!this._pendingSelfCall) {
         if (!globalThis.crypto?.randomUUID) {
