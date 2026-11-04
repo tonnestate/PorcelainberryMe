@@ -25,6 +25,7 @@ export class CallConsoleController {
     serviceWorkerContainer = globalThis.navigator?.serviceWorker,
     location = globalThis.location,
     registrationPath = '/push-sw.js',
+    pendingDialStorage = null,
   }) {
     if (!client || typeof client.request !== 'function'
         || typeof client.pollOnce !== 'function'
@@ -36,6 +37,9 @@ export class CallConsoleController {
     this.serviceWorkerContainer = serviceWorkerContainer;
     this.location = location;
     this.registrationPath = registrationPath;
+    this.pendingDialStorage = pendingDialStorage;
+    this._pendingDial = null;
+    this._dialStorageKey = null;
     this.registration = null;
     this.vapidPublicKey = null;
     this.identity = null;
@@ -80,6 +84,35 @@ export class CallConsoleController {
       throw new Error('invalid_authenticated_identity');
     }
     this.started = true;
+    // The temporary request ID is not an authentication credential. A
+    // session-scoped record survives accidental PWA reload after uncertain
+    // network responses. Never store identity tokens, calls or transcripts.
+    this._dialStorageKey = 'pb-pending-dial-v1:' + this.identity.tenant
+      + ':' + this.identity.subject;
+    if (!this.pendingDialStorage) {
+      try {
+        this.pendingDialStorage = globalThis.sessionStorage || null;
+      } catch {
+        this.pendingDialStorage = null;
+      }
+    }
+    try {
+      const existing = this.pendingDialStorage?.getItem(this._dialStorageKey);
+      if (existing) {
+        const record = JSON.parse(existing);
+        if (SUBJECT.test(record?.recipient)
+            && /^[a-f0-9]{32}$/.test(record?.key)) {
+          this._pendingDial = {
+            recipient: record.recipient, key: record.key,
+          };
+        } else {
+          this.pendingDialStorage.removeItem(this._dialStorageKey);
+        }
+      }
+    } catch {
+      // Private browsing may refuse sessionStorage; in-memory fallback
+      // still deduplicates calls throughout this controller's lifetime.
+    }
     this.client.onCallEvent = async event => {
       await this.onEvent(event);
       if (typeof this._originalEvent === 'function') {
@@ -332,21 +365,76 @@ export class CallConsoleController {
     });
   }
 
+  _persistPendingDial() {
+    try {
+      if (this._dialStorageKey && this.pendingDialStorage) {
+        if (this._pendingDial) {
+          this.pendingDialStorage.setItem(
+            this._dialStorageKey, JSON.stringify(this._pendingDial),
+          );
+        } else {
+          this.pendingDialStorage.removeItem(this._dialStorageKey);
+        }
+      }
+    } catch {
+      // The browser may refuse sessionStorage; the current session still
+      // retains the idempotency key in memory.
+    }
+  }
+
   async dial(recipient) {
     return this._perform(async () => {
       if (!SUBJECT.test(recipient)) throw new Error('invalid_recipient_identity');
-      if (!['idle'].includes(this.state.phase)) {
+      if (this.state.phase !== 'idle') {
         throw new Error('another_call_in_progress');
       }
-      if (!globalThis.crypto?.randomUUID) {
-        throw new Error('secure_random_request_id_required');
+      if (this._pendingDial && this._pendingDial.recipient !== recipient) {
+        throw new Error('unresolved_prior_dial_same_recipient_retry_required');
       }
-      const key = globalThis.crypto.randomUUID().replace(/-/g, '');
-      const call = await this.client.dial(recipient, key);
-      validId(call?.id);
+      if (!this._pendingDial) {
+        if (!globalThis.crypto?.randomUUID) {
+          throw new Error('secure_random_request_id_required');
+        }
+        this._pendingDial = {
+          recipient, key: globalThis.crypto.randomUUID().replace(/-/g, ''),
+        };
+        this._persistPendingDial();
+      }
+      let call;
+      try {
+        call = await this.client.dial(
+          this._pendingDial.recipient, this._pendingDial.key,
+        );
+        validId(call?.id);
+      } catch (error) {
+        // A timeout, transport failure or HTTP 5xx can occur *after*
+        // the server accepted the invitation. Never invent a new key.
+        if ((Number.isInteger(error?.status)
+              && error.status >= 400 && error.status < 500)
+            && !error?.outcomeUncertain) {
+          this._pendingDial = null;
+          this._persistPendingDial();
+        }
+        throw error;
+      }
+      this._pendingDial = null;
+      this._persistPendingDial();
+      if (['ENDED', 'DECLINED', 'TIMED_OUT'].includes(call.state)) {
+        this._update({
+          phase: 'idle', callId: null, peer: null, kind: null,
+          message: 'Vorheriger Anruf bereits abgeschlossen.',
+        });
+        return false;
+      }
+      if (!['RINGING', 'ACTIVE'].includes(call.state)) {
+        throw new Error('invalid_dial_response_state');
+      }
       this._update({
-        phase: 'outgoing', callId: call.id, peer: recipient, kind: null,
-        message: 'Internetverbindung wird angefragt.',
+        phase: call.state === 'ACTIVE' ? 'reconnect' : 'outgoing',
+        callId: call.id, peer: recipient, kind: null,
+        message: call.state === 'ACTIVE'
+          ? 'Anruf angenommen. Gesprächsverbindung starten.'
+          : 'Internetverbindung wird angefragt.',
       });
       return true;
     });
