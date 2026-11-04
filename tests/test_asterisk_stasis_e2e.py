@@ -55,6 +55,7 @@ class StasisThroughMediaTests(unittest.IsolatedAsyncioTestCase):
         self.media_commands = []
         self.ari_cleanup = asyncio.Event()
         self.media_mark_received = asyncio.Event()
+        self.caller_state = "Ringing"
         application = web.Application()
         application.router.add_route("*", "/ari/{tail:.*}", self.ari_handler)
         application.router.add_get("/media/{connection}", self.media_handler)
@@ -105,7 +106,12 @@ class StasisThroughMediaTests(unittest.IsolatedAsyncioTestCase):
                 pass
             return ws
         if request.method == "GET" and path == f"/channels/{CALLER}":
-            return self.web.json_response(self.channel())
+            record = self.channel()
+            record["state"] = self.caller_state
+            return self.web.json_response(record)
+        if request.method == "POST" and path == f"/channels/{CALLER}/answer":
+            self.caller_state = "Up"
+            return self.web.Response(status=204)
         if request.method == "POST" and path == "/bridges":
             return self.web.json_response({"id": BRIDGE})
         if request.method == "POST" and path == "/channels/externalMedia":
@@ -204,6 +210,12 @@ class StasisThroughMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("STOP_MEDIA_BUFFERING", self.media_commands)
         self.assertIn("MARK_MEDIA", self.media_commands)
         self.assertIn(("GET", f"/channels/{CALLER}", {}), self.ari_requests)
+        self.assertIn(("POST", f"/channels/{CALLER}/answer", {}), self.ari_requests)
+        operations = [(method, path) for method, path, _ in self.ari_requests]
+        self.assertLess(
+            operations.index(("POST", f"/channels/{CALLER}/answer")),
+            operations.index(("POST", "/bridges")),
+        )
         self.assertIn(("DELETE", f"/channels/{MEDIA}", {}), self.ari_requests)
         self.assertIn(("DELETE", f"/bridges/{BRIDGE}", {}), self.ari_requests)
         self.assertFalse(any(
