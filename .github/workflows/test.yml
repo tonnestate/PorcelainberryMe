@@ -46,5 +46,7 @@ jobs:
           python-version: "3.11"
       - name: Install only local WebSocket protocol dependency
         run: python -m pip install -e . 'aiohttp>=3.9,<4.0'
-      - name: Verify Asterisk JSON/slin16 over real loopback WebSocket
-        run: python -m unittest discover -s tests -p 'test_asterisk_worker.py' -v
+      - name: Verify Asterisk JSON/slin16 and ARI over real loopback HTTP/WebSocket
+        run: |
+          python -m unittest discover -s tests -p 'test_asterisk_worker.py' -v
+          python -m unittest discover -s tests -p 'test_asterisk_ari.py' -v
