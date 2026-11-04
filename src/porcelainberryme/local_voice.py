@@ -521,12 +521,71 @@ class VoiceTurnEngine:
         self.turn_errors = 0
         self._consecutive_failures = 0
         self.on_unavailable = on_unavailable
+        # Strictly bounded timing samples. Never retain transcripts,
+        # speaker identity, audio or model prompts in diagnostics.
+        self._stt_ms = deque(maxlen=64)
+        self._first_media_ack_ms = deque(maxlen=64)
+        self._completed_turn_ms = deque(maxlen=64)
+        self.input_interrupt_signals = 0
+        self._metrics_epoch = None
+        self._metrics_started = None
+        self._metrics_first_ack_epoch = None
+
+    @staticmethod
+    def _duration_ms(start):
+        return min(3600000, max(0, int((time.monotonic() - start) * 1000)))
+
+    @staticmethod
+    def _percentile_summary(samples):
+        if not samples:
+            return {"samples": 0, "p50_ms": None, "p95_ms": None, "max_ms": None}
+        values = sorted(samples)
+        return {
+            "samples": len(values),
+            "p50_ms": values[math.ceil(len(values) * 0.5) - 1],
+            "p95_ms": values[math.ceil(len(values) * 0.95) - 1],
+            "max_ms": values[-1],
+        }
+
+    def metrics_snapshot(self) -> dict:
+        """Only bounded in-memory timing/quality counters, never PII."""
+        return {
+            "schema": "porcelainberryme.voice-metrics.v1",
+            "turns_completed": self.turns_completed,
+            "turn_errors": self.turn_errors,
+            "input_interrupt_signals": self.input_interrupt_signals,
+            "stt_latency": self._percentile_summary(self._stt_ms),
+            "first_media_ack_latency": self._percentile_summary(
+                self._first_media_ack_ms,
+            ),
+            "complete_turn_latency": self._percentile_summary(
+                self._completed_turn_ms,
+            ),
+            "measurement_note": (
+                "First-media timing ends at media-adapter acknowledgement, "
+                "not proof that a human heard or understood audio."
+            ),
+        }
+
+    async def _play_and_measure(self, packet: AudioPacket, epoch: int) -> bool:
+        played = await self.speaker.play(packet)
+        if (played and epoch == self._epoch
+                and self._metrics_epoch == epoch
+                and self._metrics_started is not None
+                and self._metrics_first_ack_epoch != epoch):
+            self._first_media_ack_ms.append(
+                self._duration_ms(self._metrics_started)
+            )
+            self._metrics_first_ack_epoch = epoch
+        return bool(played)
 
     def receive(self, pcm: bytes):
         if self._closed:
             return
         started, utterance = self.detector.push(pcm)
         if started:
+            if self._worker is not None and not self._worker.done():
+                self.input_interrupt_signals += 1
             self._epoch += 1
             self._stream_interrupted.set()
             self._stream_interrupted = asyncio.Event()
@@ -545,6 +604,8 @@ class VoiceTurnEngine:
         """
         if self._closed:
             return
+        if self._worker is not None and not self._worker.done():
+            self.input_interrupt_signals += 1
         self._epoch += 1
         self._stream_interrupted.set()
         self._stream_interrupted = asyncio.Event()
@@ -598,7 +659,7 @@ class VoiceTurnEngine:
                         break
                     if not available or epoch != self._epoch or self._closed:
                         return False
-                    if not await self.speaker.play(packet):
+                    if not await self._play_and_measure(packet, epoch):
                         return False
                     if epoch != self._epoch or self._closed:
                         return False
@@ -607,15 +668,22 @@ class VoiceTurnEngine:
         audio = await self.tts.synthesize(response)
         if epoch != self._epoch or self._closed:
             return False
-        return await self.speaker.play(audio)
+        return await self._play_and_measure(audio, epoch)
 
     async def _drain(self):
         while self._pending is not None and not self._closed:
             pcm, self._pending = self._pending, None
             epoch = self._epoch
             interrupted = self._stream_interrupted
+            turn_started = time.monotonic()
+            self._metrics_epoch = epoch
+            self._metrics_started = turn_started
+            self._metrics_first_ack_epoch = None
             try:
+                stt_started = time.monotonic()
                 utterance = (await self.stt.transcribe(pcm)).strip()
+                if epoch == self._epoch and not self._closed:
+                    self._stt_ms.append(self._duration_ms(stt_started))
                 if epoch != self._epoch or self._closed or not utterance:
                     continue
                 stream = getattr(self.llm, "stream_sentences", None)
@@ -666,6 +734,9 @@ class VoiceTurnEngine:
                     ])
                     self.history = self.history[-12:]
                     self.turns_completed += 1
+                    self._completed_turn_ms.append(
+                        self._duration_ms(turn_started)
+                    )
                     self._consecutive_failures = 0
             except asyncio.CancelledError:
                 raise
