@@ -97,6 +97,28 @@ The remote-audio callback uses LiveKit track.attach() and normal browser
 playback. Autoplay may still be blocked. Bluetooth routing, device-specific
 permissions, packet loss and call latency need actual hardware testing.
 
+## Microphone control and real media disconnects
+
+The unstyled call console now includes an accessible mute/unmute button
+only while an explicitly connected LiveKit call is active. It calls
+`IPCallClient.setMicrophoneMuted(boolean)`, which delegates directly to
+`room.localParticipant.setMicrophoneEnabled(!muted)`. It never obtains
+new credentials, joins a new room or grants background microphone access.
+A completed hangup or reconnect resets the displayed muted state.
+
+The browser SDK now watches LiveKit `reconnecting`, `reconnected` and
+`disconnected` events. Temporary recovery does not force a second
+microphone request; a terminal media disconnect releases the defunct
+room object and the console offers an explicit reconnect button for the
+still-authorized ACTIVE call. Stale events from an old room cannot clear
+the current replacement media room. Manual reconnect rechecks server call
+status, obtains fresh room credentials and requires a user interaction.
+
+Node tests cover event delivery, manual recovery, stale room callbacks,
+mute/unmute, pre-connect error paths and accessible control state.
+These are not actual iOS network-switch, Safari audio permission, or
+background push delivery acceptance tests.
+
 ## Release gates
 
 Node regression tests exercise verified incoming/outgoing events, employee
