@@ -386,6 +386,11 @@ class VoiceTurnEngine:
                     continue
                 heard = await self.speaker.play(audio)
                 if heard and epoch == self._epoch and not self._closed:
+                    # Consent-gated notes depend on turns the other party
+                    # could actually hear, not on STT/LLM speculative work.
+                    delivered = getattr(self.llm, "on_turn_delivered", None)
+                    if delivered is not None:
+                        delivered(utterance, response)
                     self.history.extend([
                         {"role": "user", "content": utterance},
                         {"role": "assistant", "content": response},
