@@ -271,6 +271,11 @@ class LiveKitAgentCall:
             if track.kind != self.rtc.TrackKind.KIND_AUDIO:
                 return
             if participant.identity == self._expected_participant:
+                if (getattr(publication, "source", None)
+                        != self.rtc.TrackSource.SOURCE_MICROPHONE):
+                    # Only a real published microphone is valid human
+                    # input. Screen/system audio must not enter the STT path.
+                    return
                 if (self._stream_task is not None
                         and not self._stream_task.done()):
                     if self._stream_track is track:
