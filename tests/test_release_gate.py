@@ -156,6 +156,77 @@ class ReleaseGateTests(unittest.TestCase):
                 redirect_stdout(StringIO())):
             self.assertEqual(main(), 0)
 
+    def test_pstn_preflight_checks_trusted_stasis_route_and_ari_authorization(self):
+        from porcelainberryme.release_gate import (
+            _asterisk_stasis_configured, _local_asterisk_ari,
+        )
+        extra = {
+            "PB_ASTERISK_STASIS_ENABLED": "1",
+            "PB_ASTERISK_STASIS_APP": "porcelain_voice",
+            "PB_ASTERISK_TRUSTED_CONTEXT": "pbx_ai_entry",
+            "PB_ASTERISK_TRUSTED_EXTENSION": "s",
+            "PB_ASTERISK_ARI_USER": "local-user",
+            "PB_ASTERISK_ARI_PASSWORD": "local-example-secret",
+            "PB_ASTERISK_ARI_PORT": "8088",
+        }
+        env = dict(self.env, **extra)
+        self.assertTrue(_asterisk_stasis_configured(env))
+        import json
+        import base64
+
+        class ARIMockConnection:
+            def __init__(self, host, port, timeout):
+                self.target = (host, port)
+                self.header = None
+            def request(self, method, path, headers):
+                assert self.target == ("127.0.0.1", 8088)
+                assert (method, path) == ("GET", "/ari/asterisk/info")
+                self.header = headers.get("Authorization")
+                expected = "Basic " + base64.b64encode(
+                    b"local-user:local-example-secret").decode()
+                assert self.header == expected
+            def getresponse(self):
+                return type("Response", (), {
+                    "status": 200,
+                    "read": lambda unused, length: json.dumps({
+                        "system": {"version": "synthetic-test"},
+                    }).encode(),
+                })()
+            def close(self):
+                pass
+
+        with patch("porcelainberryme.release_gate.http.client.HTTPConnection",
+                   ARIMockConnection):
+            self.assertTrue(_local_asterisk_ari(env))
+        with patch("porcelainberryme.release_gate._local_call_control", return_value=True), (
+                patch("porcelainberryme.release_gate._authenticated_agent_control", return_value=True)), (
+                patch("porcelainberryme.release_gate._media_signaling", return_value=True)), (
+                patch("porcelainberryme.release_gate._local_ollama_model", return_value=True)), (
+                patch("porcelainberryme.release_gate._local_asterisk_ari", return_value=True)):
+            report = evaluate(
+                env=env, network=True, require_mobile_push=False,
+                require_pstn=True,
+            )
+        self.assertTrue(report["configuration_passed"])
+        self.assertTrue(report["runtime_checks_passed"])
+        self.assertFalse(report["production_accepted"])
+        self.assertIn(
+            "licensed_provider_sip_trunk_and_real_carrier_call",
+            report["external_acceptance_outstanding"],
+        )
+        self.assertNotIn("local-example-secret", str(report))
+
+        for name, value in (
+            ("PB_ASTERISK_TRUSTED_CONTEXT", "untrusted/context"),
+            ("PB_ASTERISK_STASIS_APP", ""),
+            ("PB_ASTERISK_ARI_PASSWORD", ""),
+            ("PB_ASTERISK_STASIS_ENABLED", "0"),
+        ):
+            with self.subTest(name=name):
+                wrong = dict(env, **{name: value})
+                self.assertFalse(_asterisk_stasis_configured(wrong))
+                self.assertFalse(_local_asterisk_ari(wrong))
+
     def test_mobile_and_pstn_require_independent_acceptance(self):
         report = evaluate(env=self.env, network=False,
                           require_mobile_push=True, require_pstn=True)
