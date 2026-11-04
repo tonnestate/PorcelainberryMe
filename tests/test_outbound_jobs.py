@@ -95,6 +95,9 @@ class DurableJobTests(unittest.IsolatedAsyncioTestCase):
             recipient=TARGET)["state"], "APPROVED")
         store.approve(tenant=TENANT, agent=AGENT, recipient=TARGET,
                       consent_reference="host-consent-0004")
+        # One job is already in DISPATCHING, so the retained limit
+        # independently protects growth even when pending capacity remains.
+        self.assertIsNotNone(store.claim(tenant=TENANT, agent=AGENT))
         with self.assertRaisesRegex(Exception, "retained_capacity_exceeded"):
             store.approve(tenant=TENANT, agent=AGENT, recipient=TARGET,
                           consent_reference="host-consent-0005")
