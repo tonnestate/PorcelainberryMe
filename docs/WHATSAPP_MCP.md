@@ -82,6 +82,67 @@ retried. An attempt already claimed by another process likewise returns
 the host to 30–300 seconds, and 64 simultaneous pending approvals are
 the default ceiling per owner agent.
 
+## Passive WhatsApp ingress from the existing TonnEstate consumer
+
+The owner account now has a separate opt-in signed ingestion endpoint
+`POST /v1/owner-whatsapp-mirror` on the **existing loopback** 
+`127.0.0.1:8873` listener. This endpoint does not claim/process
+actionable messages in the original `Ledger.inbound` table: it writes a
+dedicated, bounded `whatsapp_owner_mirror` store. This prevents a
+second consumer and avoids filling the actionable agent work queue.
+The MCP inbox automatically prefers this new passive table; legacy
+inbound records remain readable when the mirror table does not exist.
+
+Both services require independently trusted host configuration:
+
+| PorcelainberryMe process | Value |
+| --- | --- |
+| `PORCELAINBERRY_DB` | Existing private 0600 inbound SQLite file |
+| `PORCELAINBERRY_SIGNING_SECRET` | Original signed-inbound secret |
+| `PB_WHATSAPP_MIRROR_ENABLED=1` | Explicitly enable passive mirror |
+| `PB_WHATSAPP_MIRROR_SIGNING_SECRET` | Different random secret, 32+ characters, dedicated to mirror |
+| `PB_WHATSAPP_MIRROR_TENANT` | Verified owner tenant ID, server-side |
+| `PB_WHATSAPP_MIRROR_DESTINATION` | Verified owner user ID, server-side |
+
+The original TonnEstate/Aurora authenticated `/api/internal/v1/aurora/reply`
+handler optionally invokes a signed mirror client only *after* existing
+n8n bearer authentication and database-derived owner identity:
+
+| TonnEstate owner process | Value |
+| --- | --- |
+| `TE_PB_WHATSAPP_MIRROR_ENABLED=1` | Explicitly enable owner mirroring |
+| `TE_PB_WHATSAPP_SIGNING_SECRET_FILE` | Owner-only 0600 file holding the **mirror** signing secret |
+
+The mirror tenant and destination must match the authenticated user
+derived from `_owner_scope()`, **not** values in the provider payload.
+The old Aurora reply path remains the sole processing/sending authority.
+Incoming `from_me=false` direct-contact messages are mirrored
+idempotently by original provider message ID; groups and outgoing messages
+are excluded. A signed request to the mirror endpoint cannot authorize
+the ordinary actionable `/v1/inbound` route (and vice versa).
+
+`PB_MCP_WHATSAPP_INBOX_DB` must reference the existing `PORCELAINBERRY_DB`;
+`PB_MCP_WHATSAPP_OWNER_DESTINATION` must match the mirror destination.
+The passive table is limited to 10,000 owner messages by default;
+entries older than 30 days are purged on each newly inserted event and
+can be purged explicitly via host-only
+`OwnerWhatsAppMirror.purge_expired()`. No background garbage
+collector, message API polling, alternate WhatsApp login, or provider
+access is added.
+
+**Operational gap:** mirroring is deliberately best-effort and nonblocking
+for existing TonnEstate WhatsApp conversations. If PorcelainberryMe is
+down or a message is rejected, TonnEstate logs only a static diagnostic
+and continues the original reply. It does not yet have a durable retry
+outbox for the passive mirror; a production operator must add verified
+source replay or reconciliation before claiming gap-free message history.
+This repository does not assert that n8n already provides such replay.
+
+The new endpoint and owner read view are covered by actual loopback
+HTTP, signature isolation, tenant fencing, replay, capacity, retention,
+and no-duplicate-consumer tests. Live TonnEstate/VPS deployment and
+real personal-account E2E receipt remain separate acceptance gates.
+
 ## Explicit limits / acceptance
 
 1. The TonnEstate baseline currently contains a signed owner-send API,
