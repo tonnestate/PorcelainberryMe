@@ -54,6 +54,7 @@ class StasisThroughMediaTests(unittest.IsolatedAsyncioTestCase):
         self.media_frames = []
         self.media_commands = []
         self.ari_cleanup = asyncio.Event()
+        self.ari_continued = asyncio.Event()
         self.media_mark_received = asyncio.Event()
         self.caller_state = "Ringing"
         application = web.Application()
@@ -105,6 +106,9 @@ class StasisThroughMediaTests(unittest.IsolatedAsyncioTestCase):
             async for _ in ws:
                 pass
             return ws
+        if request.method == "POST" and path == f"/channels/{CALLER}/continue":
+            self.ari_continued.set()
+            return self.web.Response(status=204)
         if request.method == "GET" and path == f"/channels/{CALLER}":
             record = self.channel()
             record["state"] = self.caller_state
@@ -204,6 +208,7 @@ class StasisThroughMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.failed, 0)
         self.assertTrue(self.media_mark_received.is_set())
         self.assertTrue(self.ari_cleanup.is_set())
+        self.assertTrue(self.ari_continued.is_set())
         self.assertEqual(self.media_frames, [PCM])
         self.assertIn("FLUSH_MEDIA", self.media_commands)
         self.assertIn("START_MEDIA_BUFFERING", self.media_commands)
@@ -218,6 +223,13 @@ class StasisThroughMediaTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn(("DELETE", f"/channels/{MEDIA}", {}), self.ari_requests)
         self.assertIn(("DELETE", f"/bridges/{BRIDGE}", {}), self.ari_requests)
+        self.assertIn(("POST", f"/channels/{CALLER}/continue", {}),
+                      self.ari_requests)
+        operations = [(method, path) for method, path, _ in self.ari_requests]
+        self.assertLess(
+            operations.index(("DELETE", f"/bridges/{BRIDGE}")),
+            operations.index(("POST", f"/channels/{CALLER}/continue")),
+        )
         self.assertFalse(any(
             method == "DELETE" and path == f"/channels/{CALLER}"
             for method, path, _ in self.ari_requests
