@@ -288,8 +288,9 @@ def main() -> None:
         }
         if (any(not settings[key] for key in
                 ("whisper_model", "piper_binary", "piper_model"))
-                or not (settings["ollama_model"] or
-                        os.environ.get("PB_AGENT_KNOWLEDGE_DB", ""))):
+                or not (settings["ollama_model"]
+                        or os.environ.get("PB_LOCAL_VOICE_CHAT_MODEL", "")
+                        or os.environ.get("PB_AGENT_KNOWLEDGE_DB", ""))):
             raise ValueError("mcp_approved_local_voice_runtime_required")
         from .voice_livekit_agent import call_human
         async def start_verified_call() -> None:
