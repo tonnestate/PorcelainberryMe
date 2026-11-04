@@ -147,11 +147,19 @@ the ephemeral MEDIA_WEBSOCKET_CONNECTION_ID and validates it again when
 the WebSocket MEDIA_START event arrives. It cleans up only its own
 bridge and media channel, not the original caller.
 
-The installed host passes its authorized channel and ARI credentials
-to serve_authorized_ari_call(). Asterisk/ARI authorization, a Stasis
-event subscriber, a provider SIP trunk and phone numbers are separate
-deployment prerequisites. Nothing in this repository can place a free
-ordinary PSTN call without real interconnection.
+The implemented `porcelainberryme-asterisk-stasis` command owns the
+local authenticated Stasis event subscription, applies an exact
+application/context/extension allowlist, rechecks the actual channel
+through ARI before performing side effects, answers authorized ringing
+callers and attaches the existing voice engine. A `StasisEnd` cancels the
+active worker; finished calls and bounded rejected overload calls return
+to the original dialplan via `/continue` only after ARI reauthorization.
+The original caller is not arbitrarily hung up by this bridge.
+
+An installed Asterisk service with a host-owned trusted dialplan route,
+valid local ARI credentials and a real SIP trunk when public phone
+numbers are needed remain deployment prerequisites. Nothing in this
+repository creates free calls to the public telephone network.
 
 ## Verified release gates that still require the real host
 
