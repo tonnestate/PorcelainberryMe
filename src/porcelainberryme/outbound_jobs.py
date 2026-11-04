@@ -260,6 +260,36 @@ class DurableCallJobs:
             return result.rowcount
 
 
+    def prune_terminal(self, *, tenant: str, agent: str,
+                       retention_days: int = 30) -> int:
+        """Bound retained approval metadata without deleting uncertain work.
+
+        In-flight/UNKNOWN calls are protected from accidental deletion until
+        reconciled or the retention interval has elapsed. No recording,
+        transcript, provider receipt or raw consent text is stored here.
+        """
+        if type(retention_days) is not int or not 1 <= retention_days <= 365:
+            raise CallApprovalError("invalid_call_job_retention")
+        tenant, agent = _identity(tenant), _identity(agent)
+        now = int(self.clock())
+        cutoff = now - retention_days * 86400
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("""
+                UPDATE outbound_call_jobs SET state='EXPIRED'
+                WHERE tenant=? AND agent=? AND state='APPROVED'
+                  AND expires_at<=?
+            """, (tenant, agent, now))
+            deleted = db.execute("""
+                DELETE FROM outbound_call_jobs
+                 WHERE tenant=? AND agent=?
+                   AND state IN ('EXPIRED','FINISHED_UNVERIFIED','FAILED','UNKNOWN')
+                   AND COALESCE(completed_at, expires_at)<=?
+            """, (tenant, agent, cutoff)).rowcount
+            db.commit()
+            return deleted
+
+
 async def worker_once(store: DurableCallJobs, *, tenant: str, agent: str,
                       identity_secret: str, voice_settings: dict,
                       voice_worker=None) -> bool:
@@ -316,7 +346,15 @@ async def serve_worker(store: DurableCallJobs, *, tenant: str, agent: str,
     if not isinstance(poll_seconds, (float, int)) or not 0.2 <= poll_seconds <= 5:
         raise ValueError("invalid_call_worker_poll_interval")
     stop_event = stop_event or asyncio.Event()
+    maintenance_at = -1.0
     while not stop_event.is_set():
+        if time.monotonic() >= maintenance_at:
+            # Mark orphaned calls UNKNOWN, never restart them on worker boot.
+            await asyncio.to_thread(
+                store.reconcile_stale, tenant=tenant, agent=agent)
+            await asyncio.to_thread(
+                store.prune_terminal, tenant=tenant, agent=agent)
+            maintenance_at = time.monotonic() + 3600
         worked = await worker_once(
             store, tenant=tenant, agent=agent,
             identity_secret=identity_secret, voice_settings=voice_settings,
