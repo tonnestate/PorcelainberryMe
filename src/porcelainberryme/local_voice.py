@@ -424,23 +424,33 @@ class LocalPiperVoice:
         """
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 500:
             raise ValueError("invalid_speech_reply")
+        if (not isinstance(self.timeout, (int, float))
+                or not 0 < self.timeout <= 180):
+            raise ValueError("local_piper_total_timeout_invalid")
         process = await asyncio.create_subprocess_exec(
             self.executable, "--model", self.model_path, "--output-raw",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
+        # An absolute deadline also rejects a subprocess which dribbles
+        # small valid packets forever, resetting a per-read timeout.
+        clock = asyncio.get_running_loop()
+        deadline = clock.time() + float(self.timeout)
+        async def bounded(awaitable):
+            remaining = deadline - clock.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            return await asyncio.wait_for(awaitable, timeout=remaining)
         packet_bytes = (self.sample_rate // 50) * 2 * 5
         pending = bytearray()
         total = 0
         emitted = False
         try:
             process.stdin.write((text.strip() + "\n").encode("utf-8"))
-            await asyncio.wait_for(process.stdin.drain(), timeout=self.timeout)
+            await bounded(process.stdin.drain())
             process.stdin.close()
             while True:
-                raw = await asyncio.wait_for(
-                    process.stdout.read(65536), timeout=self.timeout,
-                )
+                raw = await bounded(process.stdout.read(65536))
                 if not raw:
                     break
                 total += len(raw)
@@ -452,7 +462,7 @@ class LocalPiperVoice:
                     del pending[:packet_bytes]
                     emitted = True
                     yield AudioPacket(packet, self.sample_rate)
-            await asyncio.wait_for(process.wait(), timeout=self.timeout)
+            await bounded(process.wait())
             if process.returncode != 0:
                 raise LocalVoiceUnavailable("local_piper_failed")
             if len(pending) % 2:
