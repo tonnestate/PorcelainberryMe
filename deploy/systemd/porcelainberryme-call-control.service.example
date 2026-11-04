@@ -1,0 +1,35 @@
+# TEMPLATE ONLY. Review paths, service user, ports and environment files.
+# Does not install or enable a service on the actual server.
+[Unit]
+Description=PorcelainberryMe Internet Call Control (loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=porcelainberryme
+Group=porcelainberryme
+WorkingDirectory=/opt/porcelainberryme
+EnvironmentFile=/etc/porcelainberryme/voice.env
+ExecStart=/opt/porcelainberryme/venv/bin/python -m porcelainberryme.ip_calls serve --port 8874
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+StateDirectory=porcelainberryme
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/porcelainberryme
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
