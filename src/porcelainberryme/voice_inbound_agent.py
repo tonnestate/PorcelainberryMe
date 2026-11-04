@@ -80,16 +80,22 @@ async def serve_inbound(*, tenant: str, agent_id: str,
                         whisper_model: str, ollama_model: str,
                         piper_binary: str, piper_model: str,
                         client=None, rtc=None, local_resources=None,
+                        owner_voice_factory=None,
                         stop_event: asyncio.Event | None = None,
                         max_sessions: int | None = None,
                         poll_seconds: float = 0.5):
     """Process bound incoming invitations; one call/agent identity at a time.
 
-    Optional client, rtc and local_resources are test injection points only:
-    production always uses real loopback HTTP, LiveKit and local models.
+    Client, RTC and local_resources support controlled tests / trusted hosts.
+    owner_voice_factory is trusted in-process host injection ONLY, never a
+    value obtained from a caller or HTTP request. Its result must be a
+    tenant/subject-matched FruitStackOwnerVoiceResponder; otherwise the
+    existing non-privileged customer responder is used.
     """
     if not tenant or not agent_id or not isinstance(identity_secret, str) or len(identity_secret) < 32:
         raise ValueError("trusted_inbound_agent_identity_required")
+    if owner_voice_factory is not None and not callable(owner_voice_factory):
+        raise ValueError("trusted_owner_voice_factory_required")
     if type(max_sessions) is not int and max_sessions is not None:
         raise ValueError("invalid_max_sessions")
     if max_sessions is not None and max_sessions < 1:
@@ -172,9 +178,14 @@ async def serve_inbound(*, tenant: str, agent_id: str,
                 # state for EACH call. No consent is inherited across calls.
                 try:
                     client.inbound_lease = lease
+                    owner_voice = (
+                        owner_voice_factory(tenant, agent_id, caller, call_id)
+                        if owner_voice_factory is not None else None
+                    )
                     llm = make_call_responder(
                         base_llm=base_llm, tenant=tenant, agent_id=agent_id,
                         caller=caller, client=client,
+                        owner_voice=owner_voice,
                     )
                     bind = getattr(llm, "set_call_id", None)
                     if bind is not None:
