@@ -40,6 +40,9 @@ export class CallConsoleController {
     this.pendingDialStorage = pendingDialStorage;
     this._pendingDial = null;
     this._dialStorageKey = null;
+    this._pendingSelfCall = null;
+    this._selfCallStorageKey = null;
+    this._selfCallApprovalStorageKey = null;
     this.registration = null;
     this.vapidPublicKey = null;
     this.identity = null;
@@ -50,6 +53,7 @@ export class CallConsoleController {
       phase: 'idle', callId: null, peer: null, kind: null,
       message: 'Bereit für Internetanrufe.', pushAvailable: false,
       pushEnabled: false, busy: false, microphoneMuted: false,
+      selfCallApprovalId: null,
     };
     this._originalEvent = client.onCallEvent;
     this._onPushMessage = event => {
@@ -89,6 +93,10 @@ export class CallConsoleController {
     // network responses. Never store identity tokens, calls or transcripts.
     this._dialStorageKey = 'pb-pending-dial-v1:' + this.identity.tenant
       + ':' + this.identity.subject;
+    this._selfCallStorageKey = 'pb-pending-self-call-v1:' + this.identity.tenant
+      + ':' + this.identity.subject;
+    this._selfCallApprovalStorageKey = 'pb-self-call-approval-v1:'
+      + this.identity.tenant + ':' + this.identity.subject;
     if (!this.pendingDialStorage) {
       try {
         this.pendingDialStorage = globalThis.sessionStorage || null;
@@ -112,6 +120,20 @@ export class CallConsoleController {
     } catch {
       // Private browsing may refuse sessionStorage; in-memory fallback
       // still deduplicates calls throughout this controller's lifetime.
+    }
+    try {
+      const pending = this.pendingDialStorage?.getItem(this._selfCallStorageKey);
+      if (pending && /^[a-f0-9]{32}$/.test(pending)) {
+        this._pendingSelfCall = pending;
+      }
+      const approval = this.pendingDialStorage?.getItem(
+        this._selfCallApprovalStorageKey,
+      );
+      if (approval && CALL_ID.test(approval)) {
+        this.state.selfCallApprovalId = approval;
+      }
+    } catch {
+      // Browser storage is optional; no bearer or login is persisted.
     }
     this.client.onCallEvent = async event => {
       await this.onEvent(event);
@@ -380,6 +402,103 @@ export class CallConsoleController {
       // The browser may refuse sessionStorage; the current session still
       // retains the idempotency key in memory.
     }
+  }
+
+  _persistSelfCall() {
+    try {
+      if (!this.pendingDialStorage) return;
+      if (this._selfCallStorageKey) {
+        if (this._pendingSelfCall) {
+          this.pendingDialStorage.setItem(
+            this._selfCallStorageKey, this._pendingSelfCall,
+          );
+        } else {
+          this.pendingDialStorage.removeItem(this._selfCallStorageKey);
+        }
+      }
+      if (this._selfCallApprovalStorageKey) {
+        if (this.state.selfCallApprovalId) {
+          this.pendingDialStorage.setItem(
+            this._selfCallApprovalStorageKey, this.state.selfCallApprovalId,
+          );
+        } else {
+          this.pendingDialStorage.removeItem(this._selfCallApprovalStorageKey);
+        }
+      }
+    } catch {
+      // Never persist auth tokens, transcripts, media or contact lists.
+    }
+  }
+
+  async callMe() {
+    return this._perform(async () => {
+      if (this.identity?.role !== 'human'
+          || typeof this.client.requestSelfCall !== 'function') {
+        throw new Error('self_call_only_for_signed_humans');
+      }
+      if (this.state.phase !== 'idle') {
+        throw new Error('another_call_in_progress');
+      }
+      if (this.state.selfCallApprovalId) {
+        throw new Error('self_call_already_requested');
+      }
+      if (!this._pendingSelfCall) {
+        if (!globalThis.crypto?.randomUUID) {
+          throw new Error('secure_random_request_id_required');
+        }
+        this._pendingSelfCall = globalThis.crypto.randomUUID().replace(/-/g, '');
+        this._persistSelfCall();
+      }
+      let approval;
+      try {
+        approval = await this.client.requestSelfCall(this._pendingSelfCall);
+      } catch (error) {
+        if (Number.isInteger(error?.status) && error.status >= 400
+            && error.status < 500 && !error.outcomeUncertain) {
+          this._pendingSelfCall = null;
+          this._persistSelfCall();
+        }
+        throw error;
+      }
+      if (['QUEUED', 'APPROVED', 'DISPATCHING'].includes(approval.state)) {
+        this._pendingSelfCall = null;
+        this._update({
+          selfCallApprovalId: approval.approval_id,
+          message: 'KI-Anruf beauftragt. Bitte eingehenden Anruf annehmen.',
+        });
+        this._persistSelfCall();
+        return true;
+      }
+      this._pendingSelfCall = null;
+      this._persistSelfCall();
+      this._update({
+        message: 'Diese KI-Anrufanforderung ist bereits abgeschlossen.',
+      });
+      return false;
+    });
+  }
+
+  async revokeCallMe() {
+    return this._perform(async () => {
+      const approvalId = this.state.selfCallApprovalId;
+      if (this.identity?.role !== 'human' || !CALL_ID.test(approvalId)
+          || typeof this.client.revokeSelfCall !== 'function') {
+        throw new Error('no_self_call_approval_to_revoke');
+      }
+      const result = await this.client.revokeSelfCall(approvalId);
+      if (result.state !== 'REVOKED' || !result.revocation_confirmed) {
+        this._update({
+          message: 'Anruf wurde möglicherweise bereits gestartet. Bitte bei Eingang ablehnen.',
+        });
+        return false;
+      }
+      this._update({
+        selfCallApprovalId: null,
+        message: 'Noch nicht gestarteter KI-Anruf zurückgenommen.',
+      });
+      this._persistSelfCall();
+      return true;
+    });
   }
 
   async dial(recipient) {
