@@ -75,3 +75,52 @@ class DurableJobTests(unittest.IsolatedAsyncioTestCase):
             ))
         self.assertEqual(sum(x is not None for x in results), 1)
 
+    async def test_worker_failure_is_fenced_and_not_redispatched(self):
+        key = self.approve()
+        self.request(key)
+        attempts = []
+        async def failure(**kwargs):
+            attempts.append(kwargs)
+            self.assertEqual(kwargs["target"], TARGET)
+            self.assertEqual(kwargs["request_id"], key)
+            self.assertEqual(self.state(key), "DISPATCHING")
+            raise OSError("private connection error")
+        args = dict(tenant=TENANT, agent=AGENT, identity_secret=SECRET,
+                    voice_settings={}, voice_worker=failure)
+        self.assertTrue(await worker_once(self.store, **args))
+        self.assertEqual(self.state(key), "FAILED")
+        self.assertFalse(await worker_once(self.store, **args))
+        self.assertEqual(len(attempts), 1)
+
+    async def test_worker_completion_never_claims_human_answer(self):
+        key = self.approve()
+        self.request(key)
+        async def no_answer(**kwargs):
+            return None
+        self.assertTrue(await worker_once(
+            self.store, tenant=TENANT, agent=AGENT, identity_secret=SECRET,
+            voice_settings={}, voice_worker=no_answer,
+        ))
+        result = self.store.status(
+            approval_id=key, tenant=TENANT, agent=AGENT, recipient=TARGET,
+        )
+        self.assertEqual(result["state"], "FINISHED_UNVERIFIED")
+        self.assertFalse(result["call_result_verified"])
+        self.assertNotIn("recipient", result)
+
+    async def test_approval_id_and_fingerprint_are_not_consent_text(self):
+        import sqlite3
+        import re
+        key = self.approve()
+        self.assertRegex(key, r"^[a-f0-9]{32}$")
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        with sqlite3.connect(self.path) as db:
+            row = db.execute(
+                "SELECT consent_fingerprint FROM outbound_call_jobs"
+            ).fetchone()
+        self.assertEqual(len(row[0]), 64)
+        self.assertNotIn("verified-consent", row[0])
+
+
+if __name__ == "__main__":
+    unittest.main()
