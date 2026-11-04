@@ -166,6 +166,47 @@ class AsteriskBridgeTests(unittest.IsolatedAsyncioTestCase):
         speaker.event("MEDIA_XON", {})
         await speaker.aclose()
 
+    async def test_barge_in_while_media_writer_waits_for_lock_never_emits_stale_pcm(self):
+        ws = FakeWS(auto_mark=False)
+        speaker = AsteriskPcmSpeaker(ws, mark_timeout=1)
+        speaker.ready = True
+        speaker.event("MEDIA_XOFF", {})
+        playback = asyncio.create_task(
+            speaker.play(AudioPacket(FRAME * 2, 16000))
+        )
+        await asyncio.sleep(0)
+        self.assertIn({"command": "START_MEDIA_BUFFERING"}, ws.outbound)
+
+        # START_MEDIA_BUFFERING was accepted. Hold the send lock so that
+        # audio tries to acquire it using the old turn revision.
+        await speaker._send_lock.acquire()
+        speaker.event("MEDIA_XON", {})
+        await asyncio.sleep(0)
+        speaker.interrupt()
+        speaker._send_lock.release()
+
+        self.assertFalse(await asyncio.wait_for(playback, 1))
+        await asyncio.sleep(0)
+        self.assertFalse(any(isinstance(item, bytes) for item in ws.outbound))
+        self.assertIn({"command": "FLUSH_MEDIA"}, ws.outbound)
+        await speaker.aclose()
+
+    async def test_interrupt_before_buffering_lock_never_starts_stale_buffer(self):
+        ws = FakeWS(auto_mark=False)
+        speaker = AsteriskPcmSpeaker(ws, mark_timeout=1)
+        speaker.ready = True
+        await speaker._send_lock.acquire()
+        playback = asyncio.create_task(speaker.play(AudioPacket(FRAME, 16000)))
+        await asyncio.sleep(0)
+        speaker.interrupt()
+        speaker._send_lock.release()
+        self.assertFalse(await asyncio.wait_for(playback, 1))
+        await asyncio.sleep(0)
+        self.assertNotIn({"command": "START_MEDIA_BUFFERING"}, ws.outbound)
+        self.assertFalse(any(isinstance(item, bytes) for item in ws.outbound))
+        self.assertIn({"command": "FLUSH_MEDIA"}, ws.outbound)
+        await speaker.aclose()
+
     async def test_no_unsupported_codec_or_wrong_audio_rate(self):
         ws = FakeWS()
         speaker = AsteriskPcmSpeaker(ws)
