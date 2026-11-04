@@ -36,22 +36,37 @@ class OwnerWhatsAppInbox:
         # An existing file may have been replaced; never follow a symlink.
         private_file(self.database)
         uri = "file:" + quote(self.database, safe="/") + "?mode=ro"
+        mirror_source = False
         try:
             with closing(sqlite3.connect(uri, uri=True, timeout=2)) as db:
                 db.execute("PRAGMA query_only=ON")
+                mirror_source = db.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='whatsapp_owner_mirror'"
+                ).fetchone() is not None
+                if mirror_source:
+                    source_table = "whatsapp_owner_mirror"
+                    key_field = "seq"
+                    scope = "tenant=? AND owner_destination=?"
+                    parameters = (self.tenant, self.owner_destination)
+                else:
+                    source_table = "inbound"
+                    key_field = "rowid"
+                    scope = "tenant_id=? AND channel='whatsapp'"
+                    parameters = (self.tenant,)
+                # Table names and column names are fixed internal literals.
                 if after:
                     rows = db.execute(
-                        "SELECT rowid,payload FROM inbound "
-                        "WHERE tenant_id=? AND channel='whatsapp' AND rowid>? "
-                        "ORDER BY rowid ASC LIMIT 1000",
-                        (self.tenant, after),
+                        f"SELECT {key_field},payload FROM {source_table} "
+                        f"WHERE {scope} AND {key_field}>? "
+                        f"ORDER BY {key_field} ASC LIMIT 1000",
+                        (*parameters, after),
                     ).fetchall()
                 else:
                     rows = db.execute(
-                        "SELECT rowid,payload FROM inbound "
-                        "WHERE tenant_id=? AND channel='whatsapp' "
-                        "ORDER BY rowid DESC LIMIT 1000",
-                        (self.tenant,),
+                        f"SELECT {key_field},payload FROM {source_table} "
+                        f"WHERE {scope} ORDER BY {key_field} DESC LIMIT 1000",
+                        parameters,
                     ).fetchall()
         except sqlite3.Error as exc:
             raise RuntimeError("whatsapp_inbox_unavailable") from exc
@@ -79,7 +94,8 @@ class OwnerWhatsAppInbox:
         matches.sort(key=lambda row: row["cursor"])
         return {
             "schema": "porcelainberryme.mcp.whatsapp-inbox.v1",
-            "source": "existing_authenticated_inbound_ledger",
+            "source": ("existing_authenticated_owner_mirror" if mirror_source
+                       else "existing_authenticated_inbound_ledger"),
             "messages": matches,
             "next_cursor": cursor,
             "truncated": len(matches) >= limit or len(rows) == 1000,
