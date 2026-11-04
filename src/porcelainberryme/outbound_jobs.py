@@ -105,7 +105,7 @@ class DurableCallJobs:
                 CREATE INDEX IF NOT EXISTS outbound_calls_claim_idx
                   ON outbound_call_jobs(tenant,agent,state,created_at);
                 CREATE INDEX IF NOT EXISTS outbound_calls_consent_idx
-                  ON outbound_call_jobs(tenant,agent,recipient,consent_fingerprint);
+                  ON outbound_call_jobs(tenant,consent_fingerprint);
             """)
 
     @contextmanager
@@ -155,12 +155,14 @@ class DurableCallJobs:
             # idempotency key. Retrying an uncertain approval HTTP/CLI result
             # must not mint a second dial authority for the same consent.
             existing = db.execute("""
-                SELECT approval_id FROM outbound_call_jobs
-                WHERE tenant=? AND agent=? AND recipient=?
-                  AND consent_fingerprint=?
+                SELECT approval_id, agent, recipient FROM outbound_call_jobs
+                WHERE tenant=? AND consent_fingerprint=?
                 ORDER BY created_at, approval_id LIMIT 1
-            """, (tenant, agent, recipient, digest)).fetchone()
+            """, (tenant, digest)).fetchone()
             if existing is not None:
+                if existing["agent"] != agent or existing["recipient"] != recipient:
+                    db.rollback()
+                    raise CallApprovalError("outbound_consent_scope_conflict")
                 db.commit()
                 return existing["approval_id"]
 
