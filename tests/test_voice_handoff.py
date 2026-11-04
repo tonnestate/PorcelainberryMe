@@ -121,6 +121,33 @@ class HumanHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await responder.persist_if_consented("a" * 32, transcript))
         self.assertEqual(inner.receipts, [("a" * 32, transcript)])
 
+    async def test_handoff_reply_never_acknowledges_pending_native_owner_result(self):
+        class DeliveryTracked(FakeBase):
+            def __init__(self):
+                self.delivered = []
+                self.bound = []
+
+            def set_call_id(self, call_id):
+                self.bound.append(call_id)
+
+            def on_turn_delivered(self, text, reply):
+                self.delivered.append((text, reply))
+
+        inner = DeliveryTracked()
+        adapter = HumanHandoffResponder(inner, Control())
+        adapter.set_call_id("a" * 32)
+        self.assertEqual(inner.bound, ["a" * 32])
+        handoff = await adapter.respond(
+            "Ich möchte mit einem Mitarbeiter sprechen", [],
+        )
+        adapter.on_turn_delivered("Ich möchte mit einem Mitarbeiter sprechen", handoff)
+        self.assertEqual(inner.delivered, [])
+        ordinary = await adapter.respond("Wie geht es weiter?", [])
+        adapter.on_turn_delivered("Wie geht es weiter?", ordinary)
+        self.assertEqual(inner.delivered, [
+            ("Wie geht es weiter?", ordinary),
+        ])
+
     async def test_agent_only_completes_on_observed_accepted_staff_microphone(self):
         client = Control()
         agent = LiveKitAgentCall(
