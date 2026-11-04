@@ -420,7 +420,19 @@ async def prepare_local_voice(*, tenant: str, agent_id: str,
         from .agent_knowledge import ApprovedKnowledgeResponder
         base_llm = ApprovedKnowledgeResponder(approved_db, tenant, agent_id)
     else:
-        base_llm = LocalOllamaResponder(ollama_model)
+        # A Hermes-style local auxiliary voice slot: short, low-latency
+        # conversation, never an alternative owner-harness authority.
+        fast_model = os.environ.get("PB_LOCAL_VOICE_CHAT_MODEL", "").strip()
+        if fast_model:
+            budget = os.environ.get("PB_LOCAL_VOICE_CHAT_MAX_TOKENS", "96")
+            if not budget.isascii() or not budget.isdecimal():
+                raise ValueError("invalid_local_voice_chat_token_budget")
+            base_llm = LocalOllamaResponder(
+                fast_model, timeout=15, max_tokens=int(budget),
+                disable_thinking=True,
+            )
+        else:
+            base_llm = LocalOllamaResponder(ollama_model)
         await base_llm.preflight()
     tts = LocalPiperVoice(piper_binary, piper_model)
     return stt, base_llm, tts
