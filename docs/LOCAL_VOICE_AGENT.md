@@ -80,6 +80,18 @@ consecutive failed turns, disconnects, and lets the existing call-control
 cleanup perform hangup and room revocation. A successful intervening
 spoken turn resets that failure counter. This avoids indefinitely silent
 connected sessions but is not a high-availability failover mechanism.
+## Remote microphone recovery
+
+The local LiveKit agent now clears partial audio and invalidates stale
+inference when its authenticated remote microphone unsubscribes, a new
+microphone publication replaces it, or the remote participant disconnects.
+A subsequent subscription from the same verified participant can resume
+speech recognition without mixing samples across disconnected tracks.
+Duplicate subscription callbacks are ignored while the same track is active.
+Regression tests exercise partial PCM, unsubscribe/disconnect, resubscription
+and a subsequent spoken reply. Real iPhone radio changes, lengthy network
+failures and listener experience still require deployment acceptance.
+
 ## Safety and operational gates before customer rollout
 
 - **Real audio test**: incoming human microphone captured, German STT recognized correctly, local LLM reply coherent, Piper speech received at the human device, interruption audio stops and room teardown completes. Measure first audio latency and percentiles under CPU load. Test multiple network topologies.
