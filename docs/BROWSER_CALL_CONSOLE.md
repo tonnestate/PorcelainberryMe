@@ -84,6 +84,33 @@ key and service worker prepared beforehand. The browser SDK now calls
 pushManager.subscribe() synchronously inside the user event handler:
 awaiting getSubscription() first can lose transient activation on WebKit.
 
+## Retry safety and temporary mobile disconnects
+
+The browser client now permits HTTPS endpoints and local HTTP loopback only;
+it rejects URL userinfo and redirects. Requests have a 10-second default
+deadline (configurable within 1–30 seconds), and empty HTTP 503 responses
+from the bounded call-control server are interpreted as overload rather
+than JSON syntax failures. A timed-out POST is explicitly classified as
+uncertain: it may already have been committed to SQLite.
+
+The first-party CallConsoleController retains ONE logical outbound
+idempotency key after an uncertain POST. It will use the exact same key
+when the user retries the same Internet recipient. When sessionStorage
+is available, only the recipient ID and random request key are stored for
+the current browser tab, so accidental PWA reloads do not generate a
+second dial authority. No JWT, bearer, transcript, microphone recording or
+contact data beyond that chosen Internet recipient ID is stored. A
+different recipient is blocked until the previous uncertain dial is
+reconciled. Terminal replay cannot ring the same call again.
+
+The pending key is erased only after a verified RINGING, ACTIVE or
+terminal server response, or a definitive non-ambiguous 4xx policy denial.
+A malformed success body never clears this safety fence.
+Browser privacy modes without sessionStorage retain this protection only
+in the live controller's memory; a new tab may start a new logical
+user request, which the host must additionally police if the same human
+action can be submitted from multiple devices.
+
 ## Media errors and reconnection
 
 The call UI does not auto-connect the caller microphone merely because
