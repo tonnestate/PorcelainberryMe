@@ -295,6 +295,154 @@ class LocalVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorded[0], ("127.0.0.1", 11434))
         self.assertEqual(recorded[1], ("POST", "/api/chat", "existing-qwen"))
 
+    async def test_local_ollama_streams_complete_sentences_before_final_event(self):
+        sent = []
+        events = [
+            {"done": False, "message": {"content": "Guten "}},
+            {"done": False, "message": {"content": "Tag. Wie "}},
+            {"done": False, "message": {"content": "geht es"}},
+            {"done": True, "message": {"content": "?"}},
+        ]
+
+        class Stream:
+            def __aiter__(self):
+                async def chunks():
+                    for event in events:
+                        yield (json.dumps(event) + "\\n").encode("utf-8")
+                return chunks()
+
+        class Response:
+            status = 200
+            content = Stream()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class Session:
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+            def post(self, url, *, json):
+                sent.append((url, json))
+                return Response()
+
+        fake_http = SimpleNamespace(
+            ClientTimeout=lambda total: total,
+            ClientSession=lambda timeout: Session(),
+            ClientError=RuntimeError,
+        )
+        with patch.dict("sys.modules", {"aiohttp": fake_http}):
+            responder = LocalOllamaResponder("already-installed:7b")
+            stream = responder.stream_sentences("Hallo", [])
+            first = await anext(stream)
+            self.assertEqual(first, "Guten Tag.")
+            second = await anext(stream)
+            self.assertEqual(second, "Wie geht es?")
+            with self.assertRaises(StopAsyncIteration):
+                await anext(stream)
+        self.assertEqual(sent[0][0], "http://127.0.0.1:11434/api/chat")
+        self.assertEqual(sent[0][1]["stream"], True)
+        self.assertEqual(sent[0][1]["messages"][-1]["content"], "Hallo")
+
+    async def test_local_ollama_stream_rejects_missing_completion(self):
+        class Stream:
+            def __aiter__(self):
+                async def chunks():
+                    yield (json.dumps({
+                        "done": False, "message": {"content": "Teil."},
+                    }) + "\\n").encode()
+                return chunks()
+
+        class Response:
+            status = 200
+            content = Stream()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class Session:
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+            def post(self, url, *, json):
+                return Response()
+
+        fake_http = SimpleNamespace(
+            ClientTimeout=lambda total: total,
+            ClientSession=lambda timeout: Session(),
+            ClientError=RuntimeError,
+        )
+        with patch.dict("sys.modules", {"aiohttp": fake_http}):
+            stream = LocalOllamaResponder("local:qwen").stream_sentences("Hallo", [])
+            self.assertEqual(await anext(stream), "Teil.")
+            with self.assertRaisesRegex(
+                LocalVoiceUnavailable, "local_ollama_stream_incomplete",
+            ):
+                await anext(stream)
+
+    async def test_incremental_tts_commits_only_fully_heard_stream(self):
+        class StreamingLLM:
+            def __init__(self):
+                self.delivered = []
+            async def respond(self, text, history):
+                raise AssertionError("legacy full-response method must not be called")
+            async def stream_sentences(self, text, history):
+                yield "Guten Tag."
+                await asyncio.sleep(0)
+                yield "Wie geht es Ihnen?"
+            def on_turn_delivered(self, utterance, response):
+                self.delivered.append((utterance, response))
+
+        llm = StreamingLLM()
+        speaker = FakeSpeaker()
+        engine = VoiceTurnEngine(FakeSTT(), llm, FakeTTS(), speaker)
+        await submit_phrase(engine)
+        if engine._worker is not None:
+            await engine._worker
+        self.assertEqual(engine.turn_errors, 0)
+        self.assertEqual(engine.turns_completed, 1)
+        self.assertEqual(len(speaker.packets), 2)
+        self.assertEqual(llm.delivered, [
+            ("Satz 1", "Guten Tag. Wie geht es Ihnen?"),
+        ])
+        await engine.close()
+
+    async def test_barge_in_discards_unfinished_streamed_response(self):
+        first_paused = asyncio.Event()
+        release = asyncio.Event()
+
+        class StreamingLLM:
+            async def stream_sentences(self, text, history):
+                if text == "Satz 1":
+                    yield "Erste Antwort."
+                    first_paused.set()
+                    await release.wait()
+                    yield "Nicht mehr sprechen."
+                else:
+                    yield "Zweite Antwort."
+
+        stt, speaker = FakeSTT(), FakeSpeaker()
+        engine = VoiceTurnEngine(stt, StreamingLLM(), FakeTTS(), speaker)
+        await submit_phrase(engine)
+        await asyncio.wait_for(first_paused.wait(), 1)
+        await submit_phrase(engine)
+        release.set()
+        await asyncio.wait_for(engine._worker, 1)
+        self.assertEqual(engine.turns_completed, 1)
+        self.assertEqual(engine.turn_errors, 0)
+        self.assertEqual(engine.history, [
+            {"role": "user", "content": "Satz 2"},
+            {"role": "assistant", "content": "Zweite Antwort."},
+        ])
+        # The first sentence may have played before the new utterance,
+        # but its interrupted continuation must never be delivered.
+        self.assertEqual(len(speaker.packets), 2)
+        await engine.close()
+
     async def test_opt_in_webrtc_vad_uses_20ms_frames_and_resets_state(self):
         created = []
 
