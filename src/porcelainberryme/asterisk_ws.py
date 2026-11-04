@@ -46,6 +46,7 @@ class AsteriskPcmSpeaker:
         self._send_lock = asyncio.Lock()
         self._marks = {}
         self._flush_tasks = set()
+        self._flush_failed = False
 
     async def _text(self, command, **params):
         async with self._send_lock:
@@ -64,7 +65,14 @@ class AsteriskPcmSpeaker:
         if self.ready and not self._closed:
             task = asyncio.create_task(self._flush())
             self._flush_tasks.add(task)
-            task.add_done_callback(self._flush_tasks.discard)
+            task.add_done_callback(self._on_flush_done)
+
+    def _on_flush_done(self, task):
+        self._flush_tasks.discard(task)
+        try:
+            task.result()
+        except (OSError, RuntimeError, asyncio.CancelledError):
+            self._flush_failed = True
 
     async def play(self, packet: AudioPacket) -> bool:
         if not self.ready or self._closed:
@@ -76,6 +84,15 @@ class AsteriskPcmSpeaker:
         promise = asyncio.get_running_loop().create_future()
         self._marks[marker] = promise
         try:
+            # Flush work from the previous barge-in must reach Asterisk before
+            # a new playback starts, or it may erase freshly queued speech.
+            pending_flushes = tuple(self._flush_tasks)
+            if pending_flushes:
+                await asyncio.gather(*pending_flushes, return_exceptions=True)
+            if self._flush_failed:
+                raise AsteriskMediaError("asterisk_flush_unverified")
+            if current != self._revision or self._closed:
+                return False
             await self._text("START_MEDIA_BUFFERING")
             # Asterisk retimes uncompressed slin16; no RTP, no frame headers.
             # Bounded frame-aligned chunks well under its 65500-byte limit.
@@ -97,11 +114,13 @@ class AsteriskPcmSpeaker:
             self._marks.pop(marker, None)
 
     async def aclose(self):
-        self._closed = True
-        self.interrupt()
+        if self._closed:
+            return
+        self.interrupt()  # flush Asterisk before local speaker shutdown
         tasks = tuple(self._flush_tasks)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        self._closed = True
 
     def event(self, name: str, data: dict):
         if name == "MEDIA_XOFF":
@@ -123,13 +142,19 @@ class AsteriskVoiceMedia:
     """
 
     def __init__(self, ws, *, expected_channel_id: str,
-                 stt, llm, tts, max_seconds: int = 3600):
+                 stt, llm, tts, max_seconds: int = 3600,
+                 expected_connection_id: str | None = None):
         if not isinstance(expected_channel_id, str) or not _CHANNEL.fullmatch(expected_channel_id):
             raise ValueError("trusted_asterisk_channel_required")
         if type(max_seconds) is not int or not 1 <= max_seconds <= 3600:
             raise ValueError("invalid_asterisk_call_limit")
         self.ws = ws
+        if (expected_connection_id is not None
+                and (not isinstance(expected_connection_id, str)
+                     or not re.fullmatch(r"[a-f0-9-]{36}", expected_connection_id))):
+            raise ValueError("trusted_asterisk_media_connection_required")
         self.expected_channel_id = expected_channel_id
+        self.expected_connection_id = expected_connection_id
         self.max_seconds = max_seconds
         self.speaker = AsteriskPcmSpeaker(ws)
         self.engine = VoiceTurnEngine(stt, llm, tts, self.speaker)
@@ -151,6 +176,9 @@ class AsteriskVoiceMedia:
         if event.get("channel_id") not in (None, self.expected_channel_id):
             raise AsteriskMediaError("asterisk_channel_identity_mismatch")
         if name == "MEDIA_START":
+            if (self.expected_connection_id is not None
+                    and event.get("connection_id") != self.expected_connection_id):
+                raise AsteriskMediaError("asterisk_connection_identity_mismatch")
             if self.started:
                 raise AsteriskMediaError("asterisk_duplicate_media_start")
             if (event.get("channel_id") != self.expected_channel_id
