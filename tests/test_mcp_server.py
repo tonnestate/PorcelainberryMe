@@ -78,7 +78,7 @@ class MCPCallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capabilities["tenant"], "tenantA")
         self.assertEqual(capabilities["role"], "agent")
         self.assertTrue(capabilities["read_only"])
-        self.assertEqual(len(capabilities["tools"]), 4)
+        self.assertEqual(len(capabilities["tools"]), 5)
         out = await bridge.active_calls(1)
         self.assertTrue(out["truncated"])
         self.assertEqual(out["calls"], [{
@@ -173,6 +173,7 @@ class MCPCallTests(unittest.IsolatedAsyncioTestCase):
                 "porcelainberryme_active_calls",
                 "porcelainberryme_call_status",
                 "porcelainberryme_call_events",
+                "porcelainberryme_call_report",
             })
             output = await server.registered["porcelainberryme_call_status"](FIRST)
         self.assertEqual(json.loads(output)["call"]["state"], "ACTIVE")
