@@ -45,7 +45,7 @@ export class CallConsoleController {
     this.state = {
       phase: 'idle', callId: null, peer: null, kind: null,
       message: 'Bereit für Internetanrufe.', pushAvailable: false,
-      pushEnabled: false, busy: false,
+      pushEnabled: false, busy: false, microphoneMuted: false,
     };
     this._originalEvent = client.onCallEvent;
     this._onPushMessage = event => {
@@ -138,6 +138,7 @@ export class CallConsoleController {
         await this.client.disconnect();
         this._update({
           phase: 'idle', callId: null, peer: null, kind: null, busy: false,
+          microphoneMuted: false,
           message: 'Anruf beendet oder nicht mehr verfügbar.',
         });
       }
@@ -281,7 +282,7 @@ export class CallConsoleController {
       return false;
     }
     this._update({
-      phase: 'active', kind: null,
+      phase: 'active', kind: null, microphoneMuted: false,
       message: 'Internetgespräch verbunden.',
     });
     return true;
@@ -299,7 +300,7 @@ export class CallConsoleController {
       if (call.state !== 'ACTIVE') {
         this._update({
           phase: 'idle', callId: null, kind: null, peer: null,
-          message: 'Anruf inzwischen beendet.',
+          microphoneMuted: false, message: 'Anruf inzwischen beendet.',
         });
         return false;
       }
@@ -338,7 +339,27 @@ export class CallConsoleController {
       }
       this._update({
         phase: 'idle', callId: null, kind: null, peer: null,
-        message: 'Anruf beendet.',
+        microphoneMuted: false, message: 'Anruf beendet.',
+      });
+      return true;
+    });
+  }
+
+  async toggleMicrophoneMute() {
+    return this._perform(async () => {
+      if (this.state.phase !== 'active' || !this.state.callId) {
+        throw new Error('microphone_requires_active_media');
+      }
+      const callId = this.state.callId;
+      const muted = !this.state.microphoneMuted;
+      await this.client.setMicrophoneMuted(muted);
+      // A hangup may have arrived while the device operation was pending.
+      if (this.state.phase !== 'active' || this.state.callId !== callId) {
+        return false;
+      }
+      this._update({
+        microphoneMuted: muted,
+        message: muted ? 'Mikrofon stummgeschaltet.' : 'Mikrofon aktiviert.',
       });
       return true;
     });
@@ -418,7 +439,10 @@ export function mountCallConsole({ root, client, ...options }) {
   connect.type = 'button';
   const end = element('button', 'Auflegen');
   end.type = 'button';
-  inCall.append(connect, end);
+  const mute = element('button', 'Stummschalten');
+  mute.type = 'button';
+  mute.setAttribute('aria-pressed', 'false');
+  inCall.append(connect, end, mute);
   const form = element('form');
   const recipientLabel = element('label', 'Internet-ID');
   const recipient = element('input');
@@ -478,6 +502,11 @@ export function mountCallConsole({ root, client, ...options }) {
     inCall.hidden = !['active', 'connecting', 'outgoing', 'reconnect']
       .includes(state.phase);
     connect.hidden = state.phase !== 'reconnect';
+    mute.hidden = state.phase !== 'active';
+    mute.disabled = state.busy;
+    mute.textContent = state.microphoneMuted
+      ? 'Mikrofon aktivieren' : 'Stummschalten';
+    mute.setAttribute('aria-pressed', state.microphoneMuted ? 'true' : 'false');
     form.hidden = state.phase !== 'idle';
     notifications.hidden = !state.pushAvailable;
     enable.hidden = state.pushEnabled;
@@ -497,6 +526,7 @@ export function mountCallConsole({ root, client, ...options }) {
   decline.addEventListener('click', () => run(() => controller.decline()));
   connect.addEventListener('click', () => run(() => controller.reconnect()));
   end.addEventListener('click', () => run(() => controller.hangup()));
+  mute.addEventListener('click', () => run(() => controller.toggleMicrophoneMute()));
   form.addEventListener('submit', event => {
     event.preventDefault();
     run(() => controller.dial(recipient.value.trim()));
