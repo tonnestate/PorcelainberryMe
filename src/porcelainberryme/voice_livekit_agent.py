@@ -427,9 +427,22 @@ async def prepare_local_voice(*, tenant: str, agent_id: str,
 
 
 def make_call_responder(*, base_llm, tenant: str, agent_id: str,
-                        caller: str, client: CallControlClient):
-    """Create a fresh per-call workflow so consent never crosses sessions."""
+                        caller: str, client: CallControlClient,
+                        owner_voice=None):
+    """Per-call policy stack. Owner-only FruitStack is an explicit host choice.
+
+    A customer-facing call always defaults to its existing approved FAQ/LLM
+    path. No caller ID, voice transcript or remote JSON may select owner mode.
+    """
     llm = base_llm
+    if owner_voice is not None:
+        from .fruitstack_voice import FruitStackOwnerVoiceResponder
+        if not isinstance(owner_voice, FruitStackOwnerVoiceResponder):
+            raise PermissionError("untrusted_fruitstack_voice_responder")
+        if (owner_voice.tenant != tenant or owner_voice.assistant != agent_id
+                or owner_voice.caller != caller):
+            raise PermissionError("fruitstack_voice_tenant_or_subject_mismatch")
+        llm = owner_voice
     calendar_db = os.environ.get("PB_APPOINTMENT_DB", "").strip()
     if calendar_db:
         from .appointments import AppointmentVoiceResponder
