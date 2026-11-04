@@ -121,6 +121,23 @@ class DurableJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(row[0]), 64)
         self.assertNotIn("verified-consent", row[0])
 
+    async def test_retention_does_not_delete_recent_or_dispatching_jobs(self):
+        old = self.approve(ttl=30)
+        self.request(old)
+        self.store.claim(tenant=TENANT, agent=AGENT)
+        fresh = self.approve(ttl=30)
+        self.tick[0] += 31
+        self.assertEqual(self.store.prune_terminal(
+            tenant=TENANT, agent=AGENT), 0)
+        self.assertEqual(self.state(fresh), "EXPIRED")
+        self.assertEqual(self.state(old), "DISPATCHING")
+        self.tick[0] += 31 * 86400
+        removed = self.store.prune_terminal(
+            tenant=TENANT, agent=AGENT)
+        self.assertEqual(removed, 1)
+        self.assertEqual(self.state(old), "DISPATCHING")
+
+
 
 if __name__ == "__main__":
     unittest.main()
