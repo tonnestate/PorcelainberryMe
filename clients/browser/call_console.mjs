@@ -131,6 +131,25 @@ export class CallConsoleController {
         message: 'Anrufstatus vorübergehend nicht erreichbar.',
       });
     }
+    if (event.call?.id === this.state.callId) {
+      if (event.kind === 'MEDIA_RECONNECTING' && this.state.phase === 'active') {
+        return this._update({
+          message: 'Audioverbindung wird automatisch wiederhergestellt.',
+        });
+      }
+      if (event.kind === 'MEDIA_RECONNECTED' && this.state.phase === 'active') {
+        return this._update({ message: 'Audioverbindung wiederhergestellt.' });
+      }
+      if (event.kind === 'MEDIA_DISCONNECTED'
+          && ['active', 'connecting'].includes(this.state.phase)) {
+        // Never automatically request a fresh microphone permission or
+        // reconnect from background network events.
+        return this._update({
+          phase: 'reconnect', microphoneMuted: false,
+          message: 'Audioverbindung unterbrochen. Bitte erneut verbinden.',
+        });
+      }
+    }
     const call = event.call;
     if (!call || typeof call.id !== 'string' || !CALL_ID.test(call.id)) return;
     if (TERMINAL.has(event.kind)) {
@@ -272,6 +291,11 @@ export class CallConsoleController {
     this._update({ phase: 'connecting', message: 'Audioverbindung wird hergestellt.' });
     try {
       await this.client.connect(id);
+      // The room may disconnect while the connection promise completes.
+      // Do not overwrite a newer MEDIA_DISCONNECTED state with ACTIVE.
+      if (this.state.callId !== id || this.state.phase !== 'connecting') {
+        return false;
+      }
     } catch (error) {
       // If media initialization fails after accepting, server state remains
       // ACTIVE. Do not imply a hangup: offer explicit manual reconnection.
