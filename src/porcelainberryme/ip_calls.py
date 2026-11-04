@@ -183,7 +183,7 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                   caller TEXT NOT NULL, callee TEXT NOT NULL,
                   agent INTEGER NOT NULL, state TEXT NOT NULL,
                   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
-                  closed_at INTEGER,
+                  closed_at INTEGER, accepted_at INTEGER,
                   idem TEXT NOT NULL,
                   UNIQUE(tenant, caller, idem)
                 );
@@ -233,6 +233,14 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                     "UPDATE ip_calls SET closed_at=expires_at "
                     "WHERE state IN ('ENDED','DECLINED','TIMED_OUT')"
                 )
+            if "accepted_at" not in columns:
+                # Old historical sessions cannot be backfilled reliably once
+                # bounded ephemeral event logs have expired.
+                con.execute("ALTER TABLE ip_calls ADD COLUMN accepted_at INTEGER")
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS ip_call_reporting_scope "
+                "ON ip_calls(tenant,created_at,caller,callee)"
+            )
             con.commit()
 
     def _conn(self):
@@ -682,8 +690,11 @@ class CallRegistry(HandoffMixin, InboundAgentMixin, PushMixin):
                 if decision == "hangup":
                     self._queue_media_teardown(con, call, now)
                 con.execute(
-                    "UPDATE ip_calls SET state=?, expires_at=?, closed_at=? WHERE id=?",
-                    (target, expires_at, now if target != "ACTIVE" else None, call_id),
+                    "UPDATE ip_calls SET state=?, expires_at=?, closed_at=?, "
+                    "accepted_at=CASE WHEN ?='ACTIVE' THEN ? ELSE accepted_at END "
+                    "WHERE id=?",
+                    (target, expires_at, now if target != "ACTIVE" else None,
+                     target, now, call_id),
                 )
                 for user in (call["caller"], call["callee"]):
                     self._event(con, call, user, target, now)
@@ -882,6 +893,17 @@ def make_handler(registry: CallRegistry):
                         ))
                 if self.command == "GET" and uri.path == "/v1/ip-calls/active":
                     return self._reply(200, registry.active_calls(claims))
+                if self.command == "GET" and uri.path == "/v1/ip-calls/report":
+                    from .reporting import call_report
+                    qs = parse_qs(uri.query, keep_blank_values=True)
+                    if (set(qs) - {"start", "end"}
+                            or any(len(values) != 1 for values in qs.values())):
+                        raise CallError("invalid_report_window")
+                    start = int(qs["start"][0]) if "start" in qs else None
+                    end = int(qs["end"][0]) if "end" in qs else None
+                    return self._reply(200, call_report(
+                        registry, claims, start=start, end=end,
+                    ))
                 if self.command == "GET" and uri.path == "/v1/ip-calls/events":
                     qs = parse_qs(uri.query)
                     after = int(qs.get("after", ["0"])[0])
