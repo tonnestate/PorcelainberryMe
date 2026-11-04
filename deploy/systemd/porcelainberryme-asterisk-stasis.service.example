@@ -1,0 +1,33 @@
+# Example only: do not install without verifying the actual host paths,
+# restricted service account, Asterisk ARI auth and dialplan ownership.
+[Unit]
+Description=PorcelainberryMe trusted Asterisk ARI Stasis listener
+After=network-online.target asterisk.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=porcelainberryme
+Group=porcelainberryme
+EnvironmentFile=/etc/porcelainberryme/asterisk-stasis.env
+ExecStart=/opt/porcelainberryme/venv/bin/porcelainberryme-asterisk-stasis
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target
