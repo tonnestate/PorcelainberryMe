@@ -78,10 +78,27 @@ voice model are reused. Owner-only AnanasMe tools and LiveKit-specific
 staff transfer are *not* automatically enabled for an incoming SIP call:
 an inbound telephone number is not an authenticated FruitStack owner.
 
+## Authenticated ARI Stasis bridge (implemented in source)
+
+The new asterisk_ari.py helper accepts an existing, independently
+authorized ARI/Stasis caller channel. It checks the real channel, creates
+a mixing bridge, attaches an incoming slin16 JSON WebSocket externalMedia
+channel, obtains its MEDIA_WEBSOCKET_CONNECTION_ID, and runs the
+existing AsteriskVoiceMedia/Piper/Whisper/Ollama worker. It cleans up
+only media and bridge resources created by the helper, never the caller.
+The separately authenticated Stasis host must still provide the
+authorizer and subscribe to incoming call events. A caller ID or a
+phone number is not a credential.
+
+This ARI control path is tested against a real locally simulated ARI
+HTTP server, including successful setup, denial, bounded responses,
+error cleanup and strict media channel binding. It is NOT evidence of
+a deployed Asterisk installation or working PSTN numbers.
+
 ## Explicitly unimplemented / deployment gates
 
-- The trusted ARI/dialplan listener that allocates and passes the real
-  channel/media IDs, verifies callers and supervises one worker per call.
+- The real deployed Stasis subscription and host-side caller permission
+  resolution, plus verified media worker supervision for each phone call.
 - An installed, configured SIP trunk and permission to originate/receive
   real public E.164 calls. Asterisk is free software, not a free connection
   to the national mobile network.
