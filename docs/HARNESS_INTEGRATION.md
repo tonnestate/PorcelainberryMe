@@ -27,10 +27,15 @@ AnanasMe is the *existing* Aurora/CherryMe/PlumMe harness. PorcelainberryMe owns
 - A harness QUEUED, WORKING, HANDED_OFF, UNKNOWN, FAILED or REVIEW_UNVERIFIED result is **not** an external reply.
 - A Gateway ACCEPTED receipt proves provider acceptance, not delivery to the human.
 - No second WhatsApp consumer is enabled and nothing is deployed to the VPS by this branch.
-- PorcelainberryMe reply dispatch depends on the additional result endpoint from AnanasMe PR #33; both branches must pass review and be deployed together in a supervised, authorized staging integration.
+- The result endpoint from AnanasMe PR #33 has now been merged into AnanasMe main (2026-11-04) after successful Python 3.11/3.12 CI. **Merging does not deploy either application**: the live host must still install/verify both interfaces in a supervised, authorized staging integration.
 
 Source: https://github.com/tonnestate/AnanasMe/pull/33
 Source: https://github.com/tonnestate/PorcelainberryMe/pull/1
+
+Owner-only native WebRTC voice is now available as a trusted host-injected
+`FruitStackOwnerVoiceResponder`. It uses the same ledger and AnanasMe
+native-result contract, but does not turn ordinary SaaS customers into
+Aurora owners. Details and deployment gates: `docs/FRUITSTACK_LIVEKIT.md`.
 
 ## Supervised restart-safe pipeline (implemented)
 
