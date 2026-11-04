@@ -64,9 +64,13 @@ class AsteriskARI:
                     timeout=self.timeout, allow_redirects=False) as response:
                 if not 200 <= response.status < 300:
                     raise ARIProtocolError("asterisk_ari_request_unconfirmed")
-                payload = await response.content.read(65537)
-                if len(payload) > 65536:
-                    raise ARIProtocolError("asterisk_ari_response_too_large")
+                fragments, length = [], 0
+                async for fragment in response.content.iter_chunked(8192):
+                    length += len(fragment)
+                    if length > 65536:
+                        raise ARIProtocolError("asterisk_ari_response_too_large")
+                    fragments.append(fragment)
+                payload = b"".join(fragments)
                 if not payload:
                     return None
                 try:
