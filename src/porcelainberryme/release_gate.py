@@ -206,18 +206,32 @@ def _local_asterisk_ari(env) -> bool:
         password = env["PB_ASTERISK_ARI_PASSWORD"]
         bearer = base64.b64encode(
             (user + ":" + password).encode("utf-8")).decode("ascii")
-        with closing(http.client.HTTPConnection(
-                "127.0.0.1", port, timeout=2)) as conn:
-            conn.request("GET", "/ari/asterisk/info",
-                         headers={"Authorization": "Basic " + bearer})
-            response = conn.getresponse()
-            body = response.read(8193)
-            if response.status != 200 or len(body) > 8192:
-                return False
-            data = json.loads(body)
-            return isinstance(data, dict) and isinstance(
-                data.get("system"), dict,
-            )
+        # A functioning ARI REST endpoint does not imply that our
+        # specific Stasis application is subscribed. Verify both.
+        endpoints = (
+            ("/ari/asterisk/info", "system", None),
+            ("/ari/applications/" + quote(
+                env["PB_ASTERISK_STASIS_APP"], safe=""), "name",
+             env["PB_ASTERISK_STASIS_APP"]),
+        )
+        for path, field, expected in endpoints:
+            with closing(http.client.HTTPConnection(
+                    "127.0.0.1", port, timeout=2)) as conn:
+                conn.request("GET", path,
+                             headers={"Authorization": "Basic " + bearer})
+                response = conn.getresponse()
+                body = response.read(8193)
+                if response.status != 200 or len(body) > 8192:
+                    return False
+                data = json.loads(body)
+                if not isinstance(data, dict):
+                    return False
+                if expected is None:
+                    if not isinstance(data.get(field), dict):
+                        return False
+                elif data.get(field) != expected:
+                    return False
+        return True
     except (OSError, ValueError, TypeError, KeyError,
             http.client.HTTPException):
         return False
