@@ -5,7 +5,7 @@ Uncertain provider outcomes are terminal UNKNOWN, never automatically retried.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from hashlib import sha256
 import json
 import os
@@ -93,9 +93,10 @@ class OwnerWhatsAppApprovals:
 
     @contextmanager
     def _db(self):
-        with sqlite3.connect(self.database, timeout=10) as db:
+        with closing(sqlite3.connect(self.database, timeout=10)) as db:
             db.row_factory = sqlite3.Row
-            yield db
+            with db:
+                yield db
 
     @staticmethod
     def scope(tenant, agent, sender):
@@ -143,6 +144,12 @@ class OwnerWhatsAppApprovals:
             ).fetchone()[0]
             if active >= 64:
                 raise OverflowError("whatsapp_pending_capacity")
+            retained = db.execute(
+                "SELECT COUNT(*) FROM whatsapp_mcp_approvals "
+                "WHERE tenant=? AND agent=?", (tenant, agent),
+            ).fetchone()[0]
+            if retained >= 10000:
+                raise OverflowError("whatsapp_retained_capacity")
             approval_id = secrets.token_hex(16)
             db.execute(
                 "INSERT INTO whatsapp_mcp_approvals VALUES "
@@ -151,6 +158,23 @@ class OwnerWhatsAppApprovals:
                  digest, int(time.time()) + ttl_seconds),
             )
             return approval_id
+
+    def prune_terminal(self, *, tenant, agent, sender,
+                       retention_days: int = 30) -> int:
+        """Host-only privacy maintenance. UNKNOWN requires reconciliation."""
+        self.scope(tenant, agent, sender)
+        if type(retention_days) is not int or not 1 <= retention_days <= 365:
+            raise ValueError("whatsapp_retention_invalid")
+        cutoff = int(time.time()) - retention_days * 86400
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            result = db.execute(
+                "DELETE FROM whatsapp_mcp_approvals "
+                "WHERE tenant=? AND agent=? AND sender=? AND expires_at<? "
+                "AND state IN ('ACCEPTED','FAILED','EXPIRED','REVOKED')",
+                (tenant, agent, sender, cutoff),
+            )
+            return result.rowcount
 
     def _row(self, db, approval_id, tenant, agent, sender):
         self.scope(tenant, agent, sender)
