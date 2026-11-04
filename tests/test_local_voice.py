@@ -5,6 +5,7 @@ No model weights, cloud calls, telephony account or media server used.
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import struct
 import tempfile
 import unittest
@@ -13,7 +14,7 @@ from unittest.mock import patch
 from porcelainberryme.local_voice import (
     AudioPacket, EnergyTurnDetector, LocalFasterWhisper,
     LocalOllamaResponder, LocalPiperVoice, LocalVoiceUnavailable,
-    VoiceTurnEngine,
+    VoiceTurnEngine, WebRTCTurnDetector,
 )
 
 
@@ -293,6 +294,75 @@ class LocalVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer, "Guten Tag.")
         self.assertEqual(recorded[0], ("127.0.0.1", 11434))
         self.assertEqual(recorded[1], ("POST", "/api/chat", "existing-qwen"))
+
+    async def test_opt_in_webrtc_vad_uses_20ms_frames_and_resets_state(self):
+        created = []
+
+        class NativeVad:
+            def __init__(self, mode):
+                self.mode = mode
+                created.append(self)
+
+            def is_speech(self, data, sample_rate):
+                self.assert_frame(data, sample_rate)
+                return data != audio_frame(0)
+
+            @staticmethod
+            def assert_frame(data, sample_rate):
+                assert sample_rate == 16000
+                assert len(data) == 640
+
+        with patch.dict("sys.modules", {"webrtcvad": SimpleNamespace(Vad=NativeVad)}):
+            detector = WebRTCTurnDetector(mode=1)
+            utterance = None
+            for _ in range(12):
+                detector.push(audio_frame())
+            for _ in range(35):
+                _started, result = detector.push(audio_frame(0))
+                if result is not None:
+                    utterance = result
+            self.assertIsNotNone(utterance)
+            self.assertEqual(utterance, audio_frame() * 12)
+            self.assertEqual(created[0].mode, 1)
+            self.assertGreaterEqual(len(created), 2)
+            with self.assertRaisesRegex(ValueError, "invalid_voice_frame_size"):
+                detector.push(b"invalid")
+
+    async def test_opt_in_vad_preserves_voice_turn_pipeline(self):
+        class NativeVad:
+            def __init__(self, mode):
+                assert mode == 1
+
+            def is_speech(self, data, sample_rate):
+                return data != audio_frame(0)
+
+        with patch.dict("sys.modules", {"webrtcvad": SimpleNamespace(Vad=NativeVad)}):
+            stt, llm, tts, speaker = FakeSTT(), FakeLLM(), FakeTTS(), FakeSpeaker()
+            engine = VoiceTurnEngine(
+                stt, llm, tts, speaker, vad_backend="webrtc",
+            )
+            await submit_phrase(engine)
+            if engine._worker is not None:
+                await engine._worker
+            self.assertIsInstance(engine.detector, WebRTCTurnDetector)
+            self.assertEqual(engine.turns_completed, 1)
+            self.assertEqual(engine.turn_errors, 0)
+            self.assertEqual(len(speaker.packets), 1)
+            await engine.close()
+
+    async def test_opt_in_vad_fails_closed_if_not_installed(self):
+        with patch.dict("sys.modules", {"webrtcvad": None}):
+            with self.assertRaisesRegex(
+                LocalVoiceUnavailable, "local_webrtc_vad_not_installed",
+            ):
+                WebRTCTurnDetector()
+        with self.assertRaisesRegex(ValueError, "invalid_vad_backend"):
+            VoiceTurnEngine(
+                FakeSTT(), FakeLLM(), FakeTTS(), FakeSpeaker(),
+                vad_backend="unknown",
+            )
+        with self.assertRaisesRegex(ValueError, "invalid_webrtc_vad_mode"):
+            WebRTCTurnDetector(mode=4)
 
 
 if __name__ == "__main__":
