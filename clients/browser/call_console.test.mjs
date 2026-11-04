@@ -331,6 +331,31 @@ class FakeElement {
   remove() { /* fake removed element */ }
 }
 
+test('lost LiveKit connection offers manual reconnect without automatic microphone access', async () => {
+  const calls = { [CID]: incoming() };
+  const client = mockedClient({ calls });
+  const controller = new CallConsoleController({
+    client, serviceWorkerContainer: null,
+  });
+  await controller.start();
+  await controller.resumeCall(CID);
+  assert.equal(await controller.accept(), true);
+  calls[CID] = active();
+
+  await controller.onEvent({ kind: 'MEDIA_RECONNECTING', call: { id: CID } });
+  assert.match(controller.state.message, /automatisch wiederhergestellt/);
+  await controller.onEvent({ kind: 'MEDIA_RECONNECTED', call: { id: CID } });
+  assert.equal(controller.state.phase, 'active');
+  await controller.onEvent({ kind: 'MEDIA_DISCONNECTED', call: { id: CID } });
+  assert.equal(controller.state.phase, 'reconnect');
+  assert.equal(controller.state.microphoneMuted, false);
+  assert.equal(client.log.filter(x => x[0] === 'media_connect').length, 1);
+  assert.equal(await controller.reconnect(), true);
+  assert.equal(controller.state.phase, 'active');
+  assert.equal(client.log.filter(x => x[0] === 'media_connect').length, 2);
+  await controller.destroy();
+});
+
 test('active call microphone can be muted and unmuted without reconnecting', async () => {
   const calls = { [CID]: incoming() };
   const client = mockedClient({ calls });
