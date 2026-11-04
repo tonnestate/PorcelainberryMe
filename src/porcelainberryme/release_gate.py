@@ -174,7 +174,7 @@ def evaluate(*, env=None, network: bool = False,
     if approved_db:
         add("voice_knowledge_configuration",
             _sqlite_schema(approved_db, {
-                "agent_profiles", "agent_facts",
+                "pb_kb_agents", "pb_kb_entries",
             }))
     else:
         add("local_voice_model_name",
