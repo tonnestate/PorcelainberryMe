@@ -20,6 +20,33 @@ The free async HTTP client `aiohttp` is included in the existing optional
 `voice-local` dependency group. Existing package-only installs do not
 contact Ollama or install any speech/model weights.
 
+## Progressive local Piper audio (additional opt-in)
+
+The local Piper adapter can now stream 100-ms PCM packets while the
+existing executable is still synthesizing the rest of the current sentence.
+The streaming reader keeps at most a bounded subprocess buffer, enforces
+the existing 8-MiB response limit, validates PCM sample alignment, and
+kills/reaps its child process if the request is cancelled or interrupted.
+A complete-response `synthesize()` API remains for legacy integrations.
+
+This stage is OFF by default. To enable it on an existing, capacity-verified
+host, set `PB_LOCAL_PIPER_STREAM=1` in the local AI-worker environment.
+No extra service or speech model is downloaded. The shared
+`VoiceTurnEngine` uses streaming only when the configured synthesizer
+explicitly advertises it. Approved FAQ, appointment and handoff policies
+still run before the supplied text reaches Piper.
+
+When the caller starts talking during Ollama or Piper streaming, the
+engine now cancels a waiting stream reader and closes the async generator,
+rather than waiting for the next model/network byte. Stale speech never
+creates a successful delivery callback. A partly audible answer cannot
+be retracted from the person's ears or remote jitter buffer.
+
+Isolated offline tests use a local synthetic Piper subprocess, exercising
+pre-completion output, process exit, cancellation and chunk-level barge-in.
+Real German speech synthesis timing, prosody, user microphone and server
+capacity are still not certified.
+
 ## Safety, compatibility and limits
 
 - Approved FAQ / document, calendar, staff-handoff and consent-gated
