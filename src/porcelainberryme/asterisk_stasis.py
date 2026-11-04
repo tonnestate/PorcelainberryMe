@@ -117,14 +117,34 @@ class AsteriskStasisListener:
         # Per-call HTTP session isolates timeouts and cleanup. The existing
         # ARI adapter owns media bridges and never terminates the caller.
         async with aiohttp.ClientSession() as session:
-            await serve_authorized_ari_call(
-                ari=self.ari, session=session, caller_channel_id=channel_id,
-                stasis_app=self.route.app,
-                authorize_channel=lambda channel: self.route.allows(
-                    channel, expected_id=channel_id),
-                tenant=self.tenant, agent_id=self.assistant,
-                **self.voice_settings,
-            )
+            try:
+                await serve_authorized_ari_call(
+                    ari=self.ari, session=session, caller_channel_id=channel_id,
+                    stasis_app=self.route.app,
+                    authorize_channel=lambda channel: self.route.allows(
+                        channel, expected_id=channel_id),
+                    tenant=self.tenant, agent_id=self.assistant,
+                    **self.voice_settings,
+                )
+            finally:
+                # The standalone listener IS this Stasis application's host.
+                # On normal media completion or failure return only its
+                # still-authorized original caller to the next dialplan step.
+                # The trusted dialplan then hangs up or handles its fallback.
+                # Without this, an answered caller can remain stuck in Stasis
+                # after our externalMedia channel and bridge have closed.
+                try:
+                    current = await self.ari._call(
+                        session, "GET", f"/channels/{channel_id}",
+                    )
+                    if self.route.allows(current, expected_id=channel_id):
+                        await self.ari._call(
+                            session, "POST", f"/channels/{channel_id}/continue",
+                        )
+                except Exception:
+                    # A disconnected or already-released caller must not
+                    # trigger automatic retries or an unrelated hangup.
+                    print("asterisk_stasis_return_unconfirmed", file=sys.stderr)
 
     def accept_event(self, event: dict) -> bool:
         """Immediate event admission; never await a remote action in here."""
