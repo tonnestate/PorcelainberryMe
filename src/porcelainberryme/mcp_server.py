@@ -11,7 +11,9 @@ import asyncio
 from collections.abc import Awaitable, Callable
 import json
 import os
+from pathlib import Path
 import re
+import stat
 from typing import Any
 
 from .voice_livekit_agent import CallControlClient
@@ -305,6 +307,38 @@ def build_server(visibility: MCPCallVisibility):
     return mcp
 
 
+def rotating_identity_token(file_path: str):
+    """Read a host-rotated restricted identity token for every HTTP action.
+
+    Never loads a shared signing secret or accepts bearer credentials from
+    MCP tool arguments. The host replaces the file atomically on refresh.
+    """
+    path = Path(file_path)
+    if not path.is_absolute():
+        raise ValueError("mcp_rotating_token_path_must_be_absolute")
+
+    def read():
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode)
+                    or stat.S_IMODE(info.st_mode) & 0o077):
+                raise PermissionError("mcp_rotating_token_must_be_private")
+            with os.fdopen(fd, "r", encoding="ascii") as source:
+                fd = -1
+                value = source.read(4097).strip()
+        finally:
+            if fd >= 0:
+                os.close(fd)
+        if (not 32 <= len(value) <= 4096
+                or any(char.isspace() for char in value)):
+            raise PermissionError("mcp_rotating_token_invalid")
+        return value
+
+    read()  # fail closed at startup; subsequent requests read fresh token
+    return read
+
+
 def main() -> None:
     # An MCP client is untrusted for identity. Configure these values in a
     # supervised process environment and pass no CLI token/owner override.
@@ -312,8 +346,16 @@ def main() -> None:
     subject = os.environ.get("PB_MCP_SUBJECT", "")
     role = os.environ.get("PB_MCP_ROLE", "")
     token = os.environ.get("PB_MCP_CALL_TOKEN", "")
-    if len(token) < 32:
-        raise ValueError("mcp_host_scoped_call_token_required")
+    token_file = os.environ.get("PB_MCP_CALL_TOKEN_FILE", "")
+    if token_file and token:
+        raise ValueError("mcp_token_file_and_static_token_are_mutually_exclusive")
+    if token_file:
+        token_provider = rotating_identity_token(token_file)
+        client = CallControlClient("", token_factory=token_provider)
+    else:
+        if len(token) < 32:
+            raise ValueError("mcp_host_scoped_call_token_required")
+        client = CallControlClient(token)
     voice_options = {}
     enabled = os.environ.get("PB_MCP_CALL_ME_ENABLED", "")
     if enabled not in ("", "0", "1"):
@@ -332,6 +374,8 @@ def main() -> None:
                 "job_store": DurableCallJobs(durable_db),
             }
         else:
+            if token_file:
+                raise ValueError("mcp_token_rotation_requires_durable_voice_mode")
             settings = {
             "whisper_model": os.environ.get("PB_LOCAL_WHISPER_DIR", ""),
             "ollama_model": os.environ.get("PB_LOCAL_OLLAMA_MODEL", ""),
@@ -355,7 +399,7 @@ def main() -> None:
                 "voice_launcher": start_verified_call,
             }
     visibility = MCPCallVisibility(
-        CallControlClient(token), tenant=tenant, subject=subject, role=role,
+        client, tenant=tenant, subject=subject, role=role,
         **voice_options,
     )
     # Actual identity is verified on every async tool invocation, not
