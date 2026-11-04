@@ -1,0 +1,37 @@
+# TEMPLATE ONLY. Review the exact enrolled agent, model paths and RAM.
+# Never enable before call consent, TLS/TURN and real-phone acceptance.
+[Unit]
+Description=PorcelainberryMe Approved Outbound Internet Calls
+After=network-online.target porcelainberryme-call-control.service
+Wants=network-online.target porcelainberryme-call-control.service
+
+[Service]
+Type=simple
+User=porcelainberryme
+Group=porcelainberryme
+WorkingDirectory=/opt/porcelainberryme
+EnvironmentFile=/etc/porcelainberryme/voice.env
+Environment=PYTHONUNBUFFERED=1
+# PB_TENANT and PB_AGENT must be provisioned by the trusted host.
+ExecStart=/opt/porcelainberryme/venv/bin/python -m porcelainberryme.outbound_jobs work --tenant ${PB_TENANT} --agent ${PB_AGENT}
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+StateDirectory=porcelainberryme
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/porcelainberryme
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
