@@ -150,10 +150,13 @@ class DurableJobTests(unittest.IsolatedAsyncioTestCase):
         fake_livekit.rtc = SimpleNamespace()
 
         class Control:
-            def __init__(self, token):
+            def __init__(self, token, *, token_factory=None):
                 claims = verify_identity_token(token, SECRET)
+                self.assert_token_factory = token_factory
                 self.checks = 0
                 self.claims = claims
+                assert callable(token_factory)
+                assert verify_identity_token(token_factory(), SECRET)["sub"] == AGENT
 
             async def whoami(self):
                 return {"role": self.claims["role"],
