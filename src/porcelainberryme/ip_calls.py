@@ -895,6 +895,36 @@ class BoundedCallHTTPServer(ThreadingHTTPServer):
         print("ip_call_http_handler_error", file=sys.stderr)
 
 
+def control_ready(registry: CallRegistry) -> bool:
+    """Bounded read-only SQLite probe; do not trust the liveness URL alone.
+
+    A missing/unreadable/corrupt database means call setup is not ready.
+    The probe intentionally doesn't acquire the write lock or run retention
+    maintenance. Media readiness is checked independently at release gate.
+    """
+    from urllib.parse import quote
+    path = Path(registry.path)
+    if not path.is_absolute() or not path.is_file():
+        return False
+    uri = "file:" + quote(str(path), safe="/") + "?mode=ro"
+    try:
+        with closing(sqlite3.connect(uri, uri=True, timeout=1)) as conn:
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("PRAGMA busy_timeout=1000")
+            tables = {
+                row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if not {"ip_calls", "ip_call_users", "ip_call_events",
+                    "ip_media_teardown"}.issubset(tables):
+                return False
+            conn.execute("SELECT 1 FROM ip_calls LIMIT 1").fetchone()
+            return True
+    except (OSError, sqlite3.Error):
+        return False
+
+
 def make_handler(registry: CallRegistry):
     """Loopback-only headless API; external TLS/auth proxy is separate."""
     class Handler(BaseHTTPRequestHandler):
@@ -933,6 +963,13 @@ def make_handler(registry: CallRegistry):
                 if self.command == "GET" and uri.path == "/healthz":
                     return self._reply(200, {"status": "up",
                                               "scope": "internet_calls_control_only"})
+                if self.command == "GET" and uri.path == "/readyz":
+                    ready = control_ready(registry)
+                    return self._reply(200 if ready else 503, {
+                        "status": "ready" if ready else "unready",
+                        "scope": "internet_calls_control_only",
+                        "media_configured": bool(registry.media_url),
+                    })
                 claims = self._auth()
                 if self.command == "GET" and uri.path == "/v1/ip-calls/whoami":
                     return self._reply(200, {
