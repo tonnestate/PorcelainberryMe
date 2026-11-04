@@ -222,6 +222,11 @@ class ConsentedNotesResponder:
         self._delivered_consent = False
         self._delivered_utterances: list[str] = []
 
+    def set_call_id(self, call_id: str) -> None:
+        bind = getattr(self.responder, "set_call_id", None)
+        if bind is not None:
+            bind(call_id)
+
     async def respond(self, text: str, history: list[dict]) -> str:
         command = normalize_spoken(text)
         if command == CONSENT:
@@ -262,6 +267,10 @@ class ConsentedNotesResponder:
                     self._delivered_utterances.remove(statement)
                 self._delivered_utterances.append(statement)
                 self._delivered_utterances = self._delivered_utterances[-MAX_EXCERPTS:]
+        if command not in (CONSENT, REVOKE):
+            forwarded = getattr(self.responder, "on_turn_delivered", None)
+            if forwarded is not None:
+                forwarded(utterance, response)
 
     async def persist_if_consented(self, call_id: str,
                                   history: list[dict]) -> bool:
