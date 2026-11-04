@@ -60,6 +60,12 @@ def call_report(registry, claims: dict, *, start: int | None = None,
         raise CallError("report_identity_required", 403)
     start, end = _window(registry, start, end)
     with closing(registry._open()) as db:
+        # _open has already performed expiration and retention maintenance
+        # transactionally. Drop the write reservation before a potentially
+        # large GROUP BY, so the same tenant can keep accepting and hanging
+        # up calls while a dashboard request is being calculated.
+        db.commit()
+        db.execute("PRAGMA query_only=ON")
         rows = db.execute("""
             WITH scoped AS (
               SELECT c.state, c.agent, c.caller, c.callee,
