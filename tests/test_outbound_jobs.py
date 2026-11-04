@@ -73,6 +73,28 @@ class DurableJobTests(unittest.IsolatedAsyncioTestCase):
                 consent_reference="verified-host-intent-0001",
             )
 
+    async def test_parallel_identical_consent_does_not_mint_extra_authority(self):
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            ids = list(pool.map(
+                lambda _: self.store.approve(
+                    tenant=TENANT, agent=AGENT, recipient=TARGET,
+                    consent_reference="exact-same-verified-user-consent",
+                ),
+                range(30),
+            ))
+        self.assertEqual(len(set(ids)), 1)
+        with __import__("sqlite3").connect(self.path) as db:
+            count = db.execute("""
+                SELECT COUNT(*) FROM outbound_call_jobs
+                WHERE tenant=? AND agent=?
+            """, (TENANT, AGENT)).fetchone()[0]
+        self.assertEqual(count, 1)
+        self.assertEqual(self.request(ids[0])["state"], "QUEUED")
+        self.assertEqual(self.store.claim(tenant=TENANT, agent=AGENT)[
+            "approval_id"], ids[0])
+        self.assertIsNone(self.store.claim(tenant=TENANT, agent=AGENT))
+
     async def test_pending_capacity_and_release_on_expiry(self):
         store = DurableCallJobs(
             self.path, clock=lambda: self.tick[0],
