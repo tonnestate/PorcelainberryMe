@@ -18,7 +18,8 @@ from porcelainberryme.whatsapp_inbox import OwnerWhatsAppInbox
 from porcelainberryme.whatsapp_mirror import OwnerWhatsAppMirror
 
 
-SECRET = "test-only-mirror-signature-secret-0123456789"
+SECRET = "test-only-original-intake-secret-0123456789"
+MIRROR_SECRET = "test-only-independent-owner-secret-0123456789"
 
 
 def event(**changes):
@@ -116,7 +117,8 @@ class MirrorLoopbackTests(unittest.TestCase):
         )
         self.server = ThreadingHTTPServer(
             ("127.0.0.1", 0),
-            handler_for(self.ledger, secret=SECRET, mirror=self.mirror),
+            handler_for(self.ledger, secret=SECRET, mirror=self.mirror,
+                        mirror_secret=MIRROR_SECRET),
         )
         self.worker = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.worker.start()
@@ -127,7 +129,8 @@ class MirrorLoopbackTests(unittest.TestCase):
         self.worker.join(timeout=2)
         self.temp.cleanup()
 
-    def post(self, payload, *, signed=True, endpoint="/v1/owner-whatsapp-mirror"):
+    def post(self, payload, *, signed=True, endpoint="/v1/owner-whatsapp-mirror",
+             key=MIRROR_SECRET):
         body = json.dumps(
             payload, separators=(",", ":"), ensure_ascii=False,
         ).encode("utf-8")
@@ -135,7 +138,7 @@ class MirrorLoopbackTests(unittest.TestCase):
         headers = {"Content-Type": "application/json"}
         if signed:
             headers["X-PB-Timestamp"] = stamp
-            headers["X-PB-Signature"] = signature(SECRET, stamp, body)
+            headers["X-PB-Signature"] = signature(key, stamp, body)
         return urlopen(Request(
             f"http://127.0.0.1:{self.server.server_port}{endpoint}",
             method="POST", data=body, headers=headers,
@@ -152,6 +155,18 @@ class MirrorLoopbackTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as caught:
             self.post(event(text="changed").to_dict())
         self.assertEqual(caught.exception.code, 409)
+
+    def test_distinct_secret_cannot_cross_into_actionable_inbound_queue(self):
+        with self.assertRaises(HTTPError) as wrong_owner_key:
+            self.post(event().to_dict(), key=SECRET)
+        self.assertEqual(wrong_owner_key.exception.code, 401)
+        with self.assertRaises(HTTPError) as wrong_inbound_key:
+            self.post(event().to_dict(), endpoint="/v1/inbound", key=MIRROR_SECRET)
+        self.assertEqual(wrong_inbound_key.exception.code, 401)
+        self.assertEqual(self.ledger.pending(tenant_id="owner_tenant"), [])
+        with self.assertRaisesRegex(ValueError, "distinct_signing_secret"):
+            handler_for(self.ledger, secret=SECRET, mirror=self.mirror,
+                        mirror_secret=SECRET)
 
     def test_bad_signature_and_foreign_owner_fail_closed(self):
         with self.assertRaises(HTTPError) as unauthorized:
