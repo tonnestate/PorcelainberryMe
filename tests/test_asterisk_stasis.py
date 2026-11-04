@@ -152,6 +152,83 @@ class TrustedStasisTests(unittest.IsolatedAsyncioTestCase):
             ))
         self.assertEqual(seen, [("GET", "/channels/PJSIP-1234.2")])
 
+    async def test_stasis_end_emitted_by_continue_cannot_cancel_own_release(self):
+        try:
+            import aiohttp
+        except ImportError:
+            self.skipTest("optional aiohttp not installed")
+        worker = listener()
+        observed = []
+        self.assertEqual(worker._returning, set())
+
+        async def fake_media(**kwargs):
+            observed.append("media_complete")
+
+        async def simulated_ari(session, method, endpoint, query=None):
+            observed.append(method + " " + endpoint)
+            if method == "GET":
+                return channel()
+            if method == "POST" and endpoint.endswith("/continue"):
+                # Real Asterisk may emit StasisEnd before the HTTP response.
+                # Deliver it into the actual subscriber on the same loop.
+                observed.append("stasis_end_delivered")
+                worker.accept_event({
+                    "type": "StasisEnd", "application": APP,
+                    "channel": channel(),
+                })
+                # A cancellation here aborts the request before the 200.
+                await asyncio.sleep(0)
+                observed.append("continue_acknowledged")
+                return None
+            raise AssertionError("unexpected_ari_operation")
+
+        with patch("porcelainberryme.asterisk_stasis.serve_authorized_ari_call",
+                   new=fake_media), patch.object(
+                       worker.ari, "_call", new=simulated_ari,
+                   ):
+            self.assertTrue(worker.accept_event(stasis_event()))
+            await asyncio.wait_for(
+                asyncio.gather(*tuple(worker._calls.values())), 2,
+            )
+        self.assertIn("continue_acknowledged", observed)
+        self.assertEqual(observed.count("stasis_end_delivered"), 1)
+        self.assertEqual(worker.failed, 0)
+        self.assertEqual(worker._returning, set())
+
+    async def test_busy_release_ignores_expected_stasis_end_during_continue(self):
+        worker = listener()
+        observed = []
+
+        async def simulated_ari(session, method, endpoint, query=None):
+            if method == "GET":
+                return channel("PJSIP-1234.2")
+            observed.append("continue_sent")
+            self.assertFalse(worker.accept_event({
+                "type": "StasisEnd", "application": APP,
+                "channel": channel("PJSIP-1234.2"),
+            }))
+            await asyncio.sleep(0)
+            observed.append("continue_confirmed")
+
+        async def busy_return(channel_id):
+            await worker._return_caller(None, channel_id)
+
+        worker._reject_busy = busy_return
+
+        async def long_call(channel_id):
+            await asyncio.Event().wait()
+
+        worker._serve_one = long_call
+        with patch.object(worker.ari, "_call", new=simulated_ari):
+            self.assertTrue(worker.accept_event(stasis_event()))
+            self.assertFalse(worker.accept_event(
+                stasis_event(channel("PJSIP-1234.2")),
+            ))
+            await asyncio.gather(*tuple(worker._busy_returns.values()))
+            self.assertEqual(observed, ["continue_sent", "continue_confirmed"])
+            self.assertEqual(worker._returning, set())
+            await worker.close()
+
     async def test_stasis_end_immediately_cancels_only_owned_channel(self):
         worker = listener()
         started = asyncio.Event()
