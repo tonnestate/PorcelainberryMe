@@ -311,10 +311,14 @@ async def worker_once(store: DurableCallJobs, *, tenant: str, agent: str,
         voice_worker = call_human
     from .ip_calls import mint_identity_token
     try:
-        token = mint_identity_token(identity_secret, tenant, agent, "agent")
+        # Mint fresh per-action credentials for the entire live call. A
+        # one-hour bearer must not expire while status and hangup are pending.
+        def renewed_token():
+            return mint_identity_token(identity_secret, tenant, agent, "agent")
         await voice_worker(
             target=job["recipient"], tenant=tenant, agent_id=agent,
-            control_token=token, request_id=job["approval_id"],
+            control_token=renewed_token(), request_id=job["approval_id"],
+            control_token_factory=renewed_token,
             **voice_settings,
         )
     except asyncio.CancelledError:
