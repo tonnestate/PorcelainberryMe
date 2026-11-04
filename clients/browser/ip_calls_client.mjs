@@ -31,6 +31,35 @@ export function decodeVapidKey(publicKey) {
   return bytes;
 }
 
+/**
+ * Deterministic, PII-free CSV for the existing user's call report.
+ * Only server-supplied aggregate dates and nonnegative integers are exported.
+ * No spreadsheet formulas, transcripts, caller IDs, auth tokens or CRM fields.
+ */
+export function callReportDailyCsv(report) {
+  if (report?.schema !== 'porcelainberryme.reporting.calls.v1'
+      || report?.scope !== 'authenticated_participant_only'
+      || !Array.isArray(report.daily) || report.daily.length > 31) {
+    throw new Error('invalid_call_reporting_response');
+  }
+  const fields = [
+    'day', 'calls', 'incoming', 'outgoing', 'accepted_confirmed',
+    'declined', 'timed_out', 'transferred_confirmed',
+    'control_session_seconds',
+  ];
+  const lines = [fields.join(';')];
+  for (const entry of report.daily) {
+    if (!entry || typeof entry.day !== 'string'
+        || !/^\\d{4}-\\d{2}-\\d{2}$/.test(entry.day)
+        || fields.slice(1).some(key => !Number.isSafeInteger(entry[key])
+                                || entry[key] < 0)) {
+      throw new Error('invalid_call_reporting_response');
+    }
+    lines.push(fields.map(key => entry[key]).join(';'));
+  }
+  return lines.join('\\n') + '\\n';
+}
+
 export class IPCallClient {
   constructor({
     apiBase,
