@@ -99,6 +99,10 @@ class TrustedStasisTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.failed, 0)
 
     async def test_double_check_with_real_ari_stasis_authorization_hook(self):
+        try:
+            import aiohttp
+        except ImportError:
+            self.skipTest("optional aiohttp not installed")
         worker = listener()
         observed = []
 
