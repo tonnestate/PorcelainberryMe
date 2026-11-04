@@ -277,7 +277,7 @@ class MCPCallVisibility:
         daily = []
         for row in day_rows:
             if (not isinstance(row, dict) or not isinstance(row.get("day"), str)
-                    or not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", row["day"])):
+                    or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", row["day"])):
                 raise RuntimeError("mcp_call_report_contract_invalid")
             daily.append({"day": row["day"], **numbers(row, daily_keys)})
         return {
