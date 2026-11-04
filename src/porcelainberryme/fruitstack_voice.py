@@ -110,6 +110,15 @@ class FruitStackOwnerVoiceResponder:
             # Only a caller-managed *per-call* ledger is allowed. A process
             # restart or duplicate ID is handled by Ledger fingerprint rules.
             await asyncio.to_thread(self.ledger.ingest, event)
+            # The configured durable ledger is exclusive to this call.
+            # Do not claim or mark another event UNKNOWN if a host operator
+            # accidentally supplies a shared, multi-call intake database.
+            queue = await asyncio.to_thread(
+                self.ledger.pending, tenant_id=self.tenant, limit=2,
+            )
+            if queue != [event]:
+                self._unknown = True
+                raise PermissionError("fruitstack_voice_ledger_not_call_exclusive")
             processor = InboundProcessor(
                 self.ledger, tenant_id=self.tenant,
                 handler=self.harness.receipt_handler,
