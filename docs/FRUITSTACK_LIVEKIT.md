@@ -79,6 +79,10 @@ External CRM/work execution requires separate tenant-scoped host connectors.
   and persistent per-call ledgers; exact installed runtime paths/permissions.
 - Supervisor-managed AnanasMe process on existing FruitStack, including
   loopback, token management and lifecycle health.
+- Privacy and deletion policy for the **transcribed owner utterances** kept
+  in the dedicated SQLite admission ledger. The file has restricted 0600
+  permissions but is persistent and is NOT a no-transcript-storage mode.
+  Apply bounded retention, backups and deletion requirements before live use.
 - Actual verified owner-to-FruitStack-to-voice conversation on the deployed
   hardware, real German audio latency, barge-in, multi-call policy and
   recovery after an ambiguous native request.
