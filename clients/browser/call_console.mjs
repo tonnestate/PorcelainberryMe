@@ -766,7 +766,9 @@ export function mountCallConsole({ root, client, ...options }) {
     notifications.hidden = !state.pushAvailable;
     selfCallPanel.hidden = controller.identity?.role !== 'human'
       || typeof client.requestSelfCall !== 'function';
-    callMe.hidden = Boolean(state.selfCallApprovalId);
+    callMe.hidden = false;
+    callMe.textContent = state.selfCallApprovalId
+      ? 'KI-Anrufstatus prüfen / erneut anrufen' : 'KI soll mich anrufen';
     callMe.disabled = state.busy || state.phase !== 'idle';
     revokeSelfCall.hidden = !state.selfCallApprovalId;
     revokeSelfCall.disabled = state.busy || state.phase !== 'idle';
