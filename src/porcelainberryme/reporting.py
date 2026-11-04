@@ -1,21 +1,30 @@
-"""Privacy-preserving, scoped operational analytics for retained Internet calls.
+"""Privacy-preserving, bounded SQL aggregates for retained Internet calls.
 
-Only established call-control facts are reported. This is not a transcript,
-billing system, customer/CRM conversion attribution or an audio-duration meter.
-Call data have the existing 30-day control-plane retention, and historic
-accepted_at unknowns must never be treated as confirmed unanswered calls.
+No call ID, recipient, transcript, audio or bearer token leaves SQLite.
+Only the authenticated participant's own tenant-bound sessions are counted.
+This is call-control duration, not measured audio or carrier billing.
 """
 from __future__ import annotations
 
 from contextlib import closing
 from datetime import datetime, timezone
 
-from .ip_calls import (
-    CALL_HISTORY_RETENTION_SECONDS, CallError, _identity,
-)
+from .ip_calls import CALL_HISTORY_RETENTION_SECONDS, CallError, _identity
 
 MAX_REPORT_SECONDS = 30 * 86400
 DEFAULT_REPORT_SECONDS = 7 * 86400
+
+_COUNTERS = (
+    "calls", "incoming", "outgoing", "agent_initiated",
+    "accepted_confirmed", "declined", "timed_out", "ended",
+    "ringing", "active", "transferred_confirmed", "duration_known_calls",
+    "control_session_seconds", "acceptance_unverified",
+)
+_DAILY = (
+    "calls", "incoming", "outgoing", "accepted_confirmed",
+    "declined", "timed_out", "transferred_confirmed",
+    "control_session_seconds",
+)
 
 
 def _window(registry, start, end):
@@ -38,11 +47,10 @@ def _utc(stamp):
 
 def call_report(registry, claims: dict, *, start: int | None = None,
                 end: int | None = None) -> dict:
-    """Read only calls in which this signed tenant/identity participated.
+    """Use SQLite grouping rather than importing potentially huge PII rows.
 
-    Staff handoff-only access is intentionally excluded, even after an
-    offer was accepted. A full tenant dashboard needs a separate operator
-    permission, never a broadened agent/ordinary-caller bearer.
+    Recipient and caller have individual indexes; no tenant-wide querying
+    or reporting over staff-only handoff relationships is authorized.
     """
     if not isinstance(claims, dict):
         raise CallError("report_identity_required", 403)
@@ -52,79 +60,61 @@ def call_report(registry, claims: dict, *, start: int | None = None,
         raise CallError("report_identity_required", 403)
     start, end = _window(registry, start, end)
     with closing(registry._open()) as db:
-        # The call registry itself runs expiration and retention transitions
-        # before this SELECT, so no displayed state is a stale ring.
         rows = db.execute("""
-            SELECT c.id, c.state, c.agent, c.caller, c.callee,
-                   c.created_at, c.closed_at, c.accepted_at,
-                   CASE WHEN EXISTS (
-                     SELECT 1 FROM ip_call_handoffs h
-                      WHERE h.call_id=c.id AND h.tenant=c.tenant
-                        AND h.state='CONNECTED'
-                   ) THEN 1 ELSE 0 END AS transferred
-              FROM ip_calls c
-             WHERE c.tenant=? AND (c.caller=? OR c.callee=?)
-               AND c.created_at>=? AND c.created_at<?
-             ORDER BY c.created_at, c.id
-        """, (tenant, subject, subject, start, end)).fetchall()
+            WITH scoped AS (
+              SELECT c.state, c.agent, c.caller, c.callee,
+                     c.created_at, c.closed_at, c.accepted_at,
+                     CASE WHEN EXISTS (
+                       SELECT 1 FROM ip_call_handoffs h
+                        WHERE h.call_id=c.id AND h.tenant=c.tenant
+                          AND h.state='CONNECTED'
+                     ) THEN 1 ELSE 0 END AS transferred
+                FROM ip_calls c
+               WHERE c.tenant=?
+                 AND (c.caller=? OR c.callee=?)
+                 AND c.created_at>=? AND c.created_at<?
+            )
+            SELECT strftime('%Y-%m-%d', created_at, 'unixepoch') AS day,
+                   COUNT(*) AS calls,
+                   SUM(CASE WHEN caller=? THEN 1 ELSE 0 END) AS outgoing,
+                   SUM(CASE WHEN callee=? THEN 1 ELSE 0 END) AS incoming,
+                   SUM(CASE WHEN agent<>0 THEN 1 ELSE 0 END) AS agent_initiated,
+                   SUM(CASE WHEN accepted_at IS NOT NULL THEN 1 ELSE 0 END)
+                     AS accepted_confirmed,
+                   SUM(CASE WHEN state='DECLINED' THEN 1 ELSE 0 END) AS declined,
+                   SUM(CASE WHEN state='TIMED_OUT' THEN 1 ELSE 0 END) AS timed_out,
+                   SUM(CASE WHEN state='ENDED' THEN 1 ELSE 0 END) AS ended,
+                   SUM(CASE WHEN state='RINGING' THEN 1 ELSE 0 END) AS ringing,
+                   SUM(CASE WHEN state='ACTIVE' THEN 1 ELSE 0 END) AS active,
+                   SUM(transferred) AS transferred_confirmed,
+                   SUM(CASE WHEN accepted_at IS NOT NULL AND closed_at IS NOT NULL
+                       THEN 1 ELSE 0 END) AS duration_known_calls,
+                   SUM(CASE WHEN accepted_at IS NOT NULL AND closed_at IS NOT NULL
+                       THEN MAX(0, closed_at - accepted_at) ELSE 0 END)
+                     AS control_session_seconds,
+                   SUM(CASE WHEN accepted_at IS NULL
+                             AND state IN ('ACTIVE','ENDED')
+                       THEN 1 ELSE 0 END) AS acceptance_unverified
+              FROM scoped
+             GROUP BY day ORDER BY day
+        """, (tenant, subject, subject, start, end, subject, subject)).fetchall()
 
-    counters = {
-        "calls": 0, "incoming": 0, "outgoing": 0,
-        "agent_initiated": 0,
-        "accepted_confirmed": 0,
-        "declined": 0, "timed_out": 0, "ended": 0,
-        "ringing": 0, "active": 0,
-        "transferred_confirmed": 0,
-        "duration_known_calls": 0, "control_session_seconds": 0,
-        "acceptance_unverified": 0,
-    }
-    per_day = {}
-    for call in rows:
-        day = datetime.fromtimestamp(
-            call["created_at"], tz=timezone.utc,
-        ).date().isoformat()
-        item = per_day.setdefault(day, {
-            "day": day, "calls": 0, "incoming": 0, "outgoing": 0,
-            "accepted_confirmed": 0, "declined": 0,
-            "timed_out": 0, "transferred_confirmed": 0,
-            "control_session_seconds": 0,
-        })
-        direction = "outgoing" if call["caller"] == subject else "incoming"
-        for stats in (counters, item):
-            stats["calls"] += 1
-            stats[direction] += 1
-        if call["agent"]:
-            counters["agent_initiated"] += 1
-        state = call["state"].lower()
-        if state in ("ringing", "active", "ended", "declined", "timed_out"):
-            counters[state] += 1
-            if state in item:
-                item[state] += 1
-        accepted = call["accepted_at"]
-        if accepted is not None:
-            counters["accepted_confirmed"] += 1
-            item["accepted_confirmed"] += 1
-        elif state in ("active", "ended"):
-            # Pre-migration calls may have been answered, but cannot be
-            # reconstructed after ephemeral ACTIVE events have been pruned.
-            counters["acceptance_unverified"] += 1
-        if call["transferred"]:
-            counters["transferred_confirmed"] += 1
-            item["transferred_confirmed"] += 1
-        closed = call["closed_at"]
-        if accepted is not None and closed is not None:
-            seconds = max(0, closed - accepted)
-            counters["duration_known_calls"] += 1
-            counters["control_session_seconds"] += seconds
-            item["control_session_seconds"] += seconds
+    metrics = {key: 0 for key in _COUNTERS}
+    daily = []
+    for row in rows:
+        for key in _COUNTERS:
+            metrics[key] += int(row[key])
+        daily.append({"day": row["day"],
+                      **{key: int(row[key]) for key in _DAILY}})
+
     return {
         "schema": "porcelainberryme.reporting.calls.v1",
         "scope": "authenticated_participant_only",
         "timezone": "UTC",
         "from": _utc(start), "to_exclusive": _utc(end),
         "history_max_days": CALL_HISTORY_RETENTION_SECONDS // 86400,
-        "metrics": counters,
-        "daily": [per_day[key] for key in sorted(per_day)],
+        "metrics": metrics,
+        "daily": daily,
         "limitations": {
             "duration": "accepted-to-closed control-plane time, not measured RTP/audio talk time",
             "historical_acceptance": "unknown for pre-migration calls without accepted_at",
