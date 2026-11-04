@@ -172,8 +172,9 @@ class AsteriskStasisListener:
             task = asyncio.create_task(self._reject_busy(channel_id))
             self._busy_returns[channel_id] = task
             task.add_done_callback(
-                lambda finished, key=channel_id:
-                self._busy_return_finished(key, finished),
+                lambda finished, key=channel_id: self._busy_return_finished(
+                    key, finished,
+                ),
             )
 
     def _busy_return_finished(self, channel_id, task):
@@ -295,6 +296,9 @@ class AsteriskStasisListener:
             if not pending:
                 break
             await asyncio.gather(*pending, return_exceptions=True)
+            # Give done callbacks a chance to release slots and pump the
+            # queued callers before iterating again.
+            await asyncio.sleep(0)
 
     async def serve(self, *, stop_event: asyncio.Event | None = None):
         """Connect only to local ARI. Reconnect without replaying events.
