@@ -11,8 +11,7 @@ test('headless client rings, accepts, connects to room, and ends without PSTN', 
   const microphoneStates = [];
   const roomFactory = () => ({
     on(event, callback) {
-      assert.equal(event, 'trackSubscribed');
-      subscribed = callback;
+      if (event === 'trackSubscribed') subscribed = callback;
     },
     async connect(url, token) {
       assert.equal(url, 'ws://localhost:7880');
@@ -81,6 +80,62 @@ test('headless client rings, accepts, connects to room, and ends without PSTN', 
   assert.equal(JSON.parse(requests[0].options.body).to, 'bob');
 });
 
+test('unexpected LiveKit disconnect leaves the call eligible for explicit reconnect', async () => {
+  const rooms = [];
+  const observed = [];
+  let mediaConnections = 0;
+  const client = new IPCallClient({
+    apiBase: 'http://localhost:8874',
+    identityToken: 'signed-human-token',
+    roomFactory: () => {
+      const events = {};
+      const room = {
+        events,
+        on(name, callback) { events[name] = callback; },
+        async connect() { mediaConnections++; },
+        localParticipant: {
+          async setMicrophoneEnabled(enabled) {
+            assert.equal(enabled, true);
+          },
+        },
+        async disconnect() {},
+      };
+      rooms.push(room);
+      return room;
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        token: 'room-token', url: 'wss://media.example.test',
+        room: 'verified-room',
+      }),
+    }),
+    onCallEvent: event => observed.push(event.kind),
+  });
+  await client.connect('a'.repeat(32));
+  rooms[0].events.reconnecting();
+  rooms[0].events.reconnected();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(observed, ['MEDIA_RECONNECTING', 'MEDIA_RECONNECTED']);
+  assert.equal(mediaConnections, 1);
+
+  rooms[0].events.disconnected();
+  await Promise.resolve();
+  assert.equal(client.room, null);
+  assert.equal(client.callId, null);
+  assert.equal(observed.at(-1), 'MEDIA_DISCONNECTED');
+  // No automatic rejoin, token or microphone request is performed.
+  assert.equal(mediaConnections, 1);
+
+  await client.connect('a'.repeat(32));
+  assert.equal(mediaConnections, 2);
+  rooms[0].events.disconnected(); // delayed event from previous room
+  await Promise.resolve();
+  assert.equal(client.room, rooms[1]);
+  await client.disconnect();
+});
+
 test('media is forbidden before receiver accepts, no silent connect', async () => {
   let roomFactoryCalls = 0;
   const client = new IPCallClient({
@@ -123,7 +178,8 @@ test('employee accepts warm handoff, joins same room, and hangs up independently
   let remoteDisconnected = false;
   const roomFactory = () => ({
     on(event, handler) {
-      assert.equal(event, 'trackSubscribed');
+      assert.ok(['trackSubscribed', 'reconnecting', 'reconnected',
+                 'disconnected'].includes(event));
     },
     async connect(url, token) {
       assert.equal(url, 'ws://localhost:7880');
