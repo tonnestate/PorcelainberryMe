@@ -95,6 +95,9 @@ class AsteriskStasisListener:
         self.max_calls = max_calls
         self._calls: dict[str, asyncio.Task] = {}
         self._busy_returns: dict[str, asyncio.Task] = {}
+        # An acknowledged /continue itself produces StasisEnd. Do not
+        # cancel the task carrying that HTTP result or release may be lost.
+        self._returning: set[str] = set()
         self._seen: deque[str] = deque(maxlen=4096)
         self.dispatched = 0
         self.rejected = 0
@@ -116,6 +119,10 @@ class AsteriskStasisListener:
         This performs no arbitrary hangup and does not retry ambiguous ARI
         effects. The host dialplan determines its next step.
         """
+        # Lock the *entire* GET-and-continue sequence against StasisEnd.
+        # The event means the caller left the app, which is exactly what
+        # this authoritative continuation is trying to accomplish.
+        self._returning.add(channel_id)
         try:
             current = await self.ari._call(
                 session, "GET", f"/channels/{channel_id}",
@@ -130,6 +137,8 @@ class AsteriskStasisListener:
             # Disconnected/unverified channels are not force-hung-up.
             print("asterisk_stasis_return_unconfirmed", file=sys.stderr)
             return False
+        finally:
+            self._returning.discard(channel_id)
 
     async def _reject_busy(self, channel_id):
         """Release only an independently reverified capacity-excess call."""
@@ -182,6 +191,11 @@ class AsteriskStasisListener:
                 and event.get("application") == self.route.app):
             ended = event.get("channel")
             channel_id = ended.get("id") if isinstance(ended, dict) else None
+            # Returning a caller to the dialplan is expected to emit
+            # StasisEnd *before* the /continue response is delivered.
+            # Cancelling here can corrupt the cleanup completion receipt.
+            if isinstance(channel_id, str) and channel_id in self._returning:
+                return False
             task = self._calls.get(channel_id) if isinstance(channel_id, str) else None
             if task is None and isinstance(channel_id, str):
                 task = self._busy_returns.get(channel_id)
