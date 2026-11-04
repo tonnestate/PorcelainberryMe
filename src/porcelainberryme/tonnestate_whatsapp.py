@@ -49,6 +49,12 @@ class TonnEstateWhatsAppTransport:
             with urlopen(request, timeout=20) as response:
                 result = json.loads(response.read(65536))
         except HTTPError as exc:
+            # TonnEstate currently also wraps a bridge timeout as HTTP 400
+            # ("aurora_send_unavailable"). A 400 therefore does NOT prove
+            # that the downstream WhatsApp provider rejected the message.
+            # Treat it as ambiguous, never as safe-to-retry FAILED.
+            if exc.code == 400:
+                raise RuntimeError("tonnestate_whatsapp_ambiguous_400") from exc
             if 400 <= exc.code < 500 and exc.code != 429:
                 raise DeliveryRejected("tonnestate_whatsapp_api_refused") from exc
             raise
