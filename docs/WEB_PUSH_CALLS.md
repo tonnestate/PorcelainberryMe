@@ -27,6 +27,11 @@ Official developer docs:
 https://developer.apple.com/documentation/usernotifications/sending-web-push-notifications-in-web-apps-and-browsers
 https://webkit.org/blog/13878/
 
+Malformed browser push endpoint authorities and invalid ports are now
+validated as controlled request errors instead of exposing underlying
+URL parser failures. Only approved HTTPS push-service hosts remain allowed;
+this does not guarantee that a handset will display a notification.
+
 ## Configure on existing infrastructure
 
 Install only the optional free sender dependency:
