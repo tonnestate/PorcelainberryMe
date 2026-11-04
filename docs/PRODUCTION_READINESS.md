@@ -42,6 +42,20 @@ privaten Umgebungsdateien:
 
     porcelainberryme-release-gate --network
 
+Die Standardausführung liefert selbst bei vollständig bestandener
+Konfigurations- und Laufzeitprüfung den Exitcode 3, solange die reale
+Produktionsabnahme noch nicht nachgewiesen wurde. Dadurch kann eine
+normale CI diesen Check nicht als automatische Freigabe verwenden.
+Für ausdrücklich technische Staging-Prüfungen ohne Produktivfreigabe:
+
+    porcelainberryme-release-gate --network --preflight-only
+
+Nur dieses bewusst gewählte Preflight-only-Verfahren kann mit Exitcode 0
+abschließen, sofern die automatisierbaren Tests bestanden sind.
+Fehlende Konfiguration bzw. Laufzeitdienste liefern Exitcode 2.
+Exitcode 0 im Preflight-only-Modus darf nicht als Nachweis für einen
+angenommenen realen Telefonanruf verwendet werden.
+
 Der Check gibt nur PASS, FAIL oder NOT_TESTED zu benannten technischen
 Prüfungen aus. Kein Pfad, Schlüssel, Token, Kunde, Gespräch oder
 Caller-ID wird im JSON-Ergebnis ausgegeben. Das Programm tätigt keine
