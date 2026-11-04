@@ -211,6 +211,18 @@ cancel ongoing media immediately.
 The PCM speaker treats any failed `FLUSH_MEDIA` operation as an unsafe
 playback state. It refuses new audio after that failure, rather than
 risking speech from an interrupted turn leaking into the next turn.
+
+On overload the listener now runs at most four concurrent
+authenticated ARI return operations and holds up to 32 additional
+channels in a FIFO (configurable through
+`PB_ASTERISK_MAX_BUSY_PENDING`, allowed 1..256). A queued caller that
+hangs up is removed without a late `/continue`. Graceful shutdown drains
+this queue after cancelling active voice sessions. Each return has a
+three-second deadline, never an unbounded retry. The counter
+`overload_exhausted` records events beyond this finite queue; the
+operator must enforce an ingress/concurrent channel ceiling in Asterisk
+so calls beyond that tested ceiling cannot remain in Stasis. No finite
+in-process queue is a substitute for SIP admission control.
 The existing Piper subprocess also drains its discarded buffered stdout
 after being killed on interruption; this prevents a deadlocked
 `Process.wait()` when an OS pipe is full.
