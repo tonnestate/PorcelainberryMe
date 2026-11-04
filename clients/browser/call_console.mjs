@@ -417,6 +417,12 @@ export class CallConsoleController {
         }
         throw error;
       }
+      if (!['RINGING', 'ACTIVE', 'ENDED', 'DECLINED', 'TIMED_OUT']
+            .includes(call.state)) {
+        // An invalid body after HTTP 200 may still mean the invitation was
+        // persisted. Preserve the same request ID until reconciliation.
+        throw new Error('invalid_dial_response_state');
+      }
       this._pendingDial = null;
       this._persistPendingDial();
       if (['ENDED', 'DECLINED', 'TIMED_OUT'].includes(call.state)) {
@@ -425,9 +431,6 @@ export class CallConsoleController {
           message: 'Vorheriger Anruf bereits abgeschlossen.',
         });
         return false;
-      }
-      if (!['RINGING', 'ACTIVE'].includes(call.state)) {
-        throw new Error('invalid_dial_response_state');
       }
       this._update({
         phase: call.state === 'ACTIVE' ? 'reconnect' : 'outgoing',
