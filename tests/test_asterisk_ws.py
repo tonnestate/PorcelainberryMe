@@ -135,6 +135,22 @@ class AsteriskBridgeTests(unittest.IsolatedAsyncioTestCase):
             bridge._binary(b"odd")
         await bridge.engine.close()
 
+    async def test_media_start_rejects_different_ari_connection_uuid(self):
+        ws = FakeWS()
+        session = AsteriskVoiceMedia(
+            ws, expected_channel_id=CHANNEL,
+            expected_connection_id="01234567-89ab-4cde-8fab-123456789abc",
+            stt=STT(), llm=LLM(), tts=TTS(),
+        )
+        with self.assertRaisesRegex(AsteriskMediaError, "connection_identity_mismatch"):
+            session._text(json.dumps({
+                "event": "MEDIA_START", "channel_id": CHANNEL,
+                "connection_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                "format": "slin16", "optimal_frame_size": 640, "ptime": 20,
+            }))
+        self.assertFalse(session.started)
+        await session.engine.close()
+
     async def test_backpressure_interrupt_and_asterisk_flush(self):
         ws = FakeWS(auto_mark=False)
         speaker = AsteriskPcmSpeaker(ws, mark_timeout=1)
