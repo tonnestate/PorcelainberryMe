@@ -232,7 +232,7 @@ class OwnerWhatsAppDrafts:
                     self._public(row))
 
     def revoke(self, draft_id: str) -> dict:
-        """Host only: decline a draft; cannot undo any started send."""
+        """Host only: revoke before dispatch; never undo an attempted send."""
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             row = self._read(db, draft_id)
@@ -244,6 +244,19 @@ class OwnerWhatsAppDrafts:
                     "UPDATE whatsapp_mcp_drafts SET state='REVOKED' "
                     "WHERE draft_id=? AND state='DRAFT'", (draft_id,),
                 )
+            elif row["state"] == "APPROVED":
+                # One transaction guarantees a concurrent dispatch cannot
+                # claim APPROVED after successful host revocation.
+                revoked = db.execute(
+                    "UPDATE whatsapp_mcp_approvals SET state='REVOKED' "
+                    "WHERE approval_id=? AND state='APPROVED'",
+                    (row["approval_id"],),
+                )
+                if revoked.rowcount == 1:
+                    db.execute(
+                        "UPDATE whatsapp_mcp_drafts SET state='REVOKED' "
+                        "WHERE draft_id=? AND state='APPROVED'", (draft_id,),
+                    )
             return self._public(self._read(db, draft_id))
 
     def prune(self, retention_days: int = 30) -> int:
@@ -251,11 +264,17 @@ class OwnerWhatsAppDrafts:
             raise ValueError("whatsapp_draft_retention_invalid")
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
+            # Keep mappings for UNKNOWN / ATTEMPTING outbound jobs:
+            # deleting a draft would hide their durable reconciliation ID.
             result = db.execute(
                 "DELETE FROM whatsapp_mcp_drafts "
                 "WHERE tenant=? AND agent=? AND sender=? "
-                "AND expires_at<? AND state IN "
-                "('DRAFT','EXPIRED','APPROVED','REVOKED')",
+                "AND expires_at<? AND "
+                "(state IN ('DRAFT','EXPIRED','REVOKED') OR "
+                "(state='APPROVED' AND EXISTS "
+                "(SELECT 1 FROM whatsapp_mcp_approvals AS a "
+                "WHERE a.approval_id=whatsapp_mcp_drafts.approval_id "
+                "AND a.state IN ('ACCEPTED','FAILED','EXPIRED','REVOKED')))",
                 (self.tenant, self.agent, self.sender,
                  int(time.time()) - retention_days * 86400),
             )
