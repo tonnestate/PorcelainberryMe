@@ -93,6 +93,10 @@ class OwnerWhatsAppApprovals:
 
     @contextmanager
     def _db(self):
+        # Re-check at every consent/dispatch operation, not only startup.
+        # The long-running MCP process must reject a replaced, symlinked
+        # or newly world-readable private approval database.
+        private_file(self.database)
         with closing(sqlite3.connect(self.database, timeout=10)) as db:
             db.row_factory = sqlite3.Row
             with db:

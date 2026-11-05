@@ -106,7 +106,7 @@ class OwnerMCPTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             instance.registered["porcelainberryme_whatsapp_inbox"].__code__.co_argcount,
-            2,
+            3,
         )
         capabilities = await self.bridge.capabilities()
         self.assertFalse(capabilities["read_only"])
@@ -236,6 +236,18 @@ class OwnerMCPTests(unittest.IsolatedAsyncioTestCase):
                 external_id=message_id, sender="49151234567@c.us",
                 recipient=recipient, text=text,
             ))
+        latest = await self.bridge.whatsapp_messages(limit=1)
+        self.assertEqual(
+            [entry["text"] for entry in latest["messages"]], ["Second"],
+        )
+        older = await self.bridge.whatsapp_messages(
+            before=latest["previous_cursor"], limit=5,
+        )
+        self.assertEqual(
+            [entry["text"] for entry in older["messages"]], ["Hello"],
+        )
+        with self.assertRaisesRegex(ValueError, "cursor_direction_conflict"):
+            await self.bridge.whatsapp_messages(after=4, before=2)
         messages = await self.bridge.whatsapp_messages(limit=10)
         self.assertEqual(
             [x["text"] for x in messages["messages"]],

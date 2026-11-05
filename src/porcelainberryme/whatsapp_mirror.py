@@ -11,6 +11,9 @@ from hashlib import sha256
 import json
 import sqlite3
 import time
+from urllib.parse import quote
+
+from .whatsapp_mcp import private_file
 
 from .contracts import InboundEvent
 from .ledger import IdempotencyConflict
@@ -28,7 +31,9 @@ class OwnerWhatsAppMirror:
             raise ValueError("whatsapp_mirror_capacity_invalid")
         if type(retention_days) is not int or not 1 <= retention_days <= 365:
             raise ValueError("whatsapp_mirror_retention_invalid")
-        self.database = database
+        # Revalidate on each connection; no alternate DB or symlink may
+        # replace the existing private owner mirror while it is running.
+        self.database = private_file(database, create=True)
         self.tenant = tenant
         self.owner_destination = owner_destination
         self.max_rows = max_rows
@@ -55,10 +60,36 @@ class OwnerWhatsAppMirror:
 
     @contextmanager
     def _db(self):
+        private_file(self.database)
         with closing(sqlite3.connect(self.database, timeout=10)) as db:
             db.row_factory = sqlite3.Row
             with db:
                 yield db
+
+    def ready(self) -> bool:
+        """Probe only this configured owner mirror, not generic HTTP liveness.
+
+        Read-only schema/integrity inspection; no message ingestion or
+        background processing. Never create a replacement file here.
+        """
+        try:
+            private_file(self.database)
+            uri = "file:" + quote(self.database, safe="/") + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True, timeout=2)) as db:
+                db.execute("PRAGMA query_only=ON")
+                cols = {row[1] for row in db.execute(
+                    "PRAGMA table_info(whatsapp_owner_mirror)"
+                )}
+                required = {
+                    "seq", "tenant", "owner_destination", "external_id",
+                    "digest", "payload", "received_at",
+                }
+                return (required.issubset(cols)
+                        and db.execute("PRAGMA quick_check(1)").fetchone()[0]
+                        == "ok")
+        except (OSError, ValueError, PermissionError, sqlite3.Error,
+                IndexError, TypeError):
+            return False
 
     def purge_expired(self) -> int:
         """Explicit host maintenance; no other tenant or queue is touched."""

@@ -52,9 +52,15 @@ No token/credential/account contact is committed to Git.
 
 ## Exact MCP tools and mandatory human consent
 
-- `porcelainberryme_whatsapp_inbox(after=0, limit=20)` reads only
-  previously authenticated owner inbound events from the private local
-  mirror. This is not a live remote WhatsApp-history reader.
+- `porcelainberryme_whatsapp_inbox(after=0, limit=20, before=0)`
+  reads only previously authenticated owner inbound events. With
+  `after` it returns **newer** events, with `before` it retrieves
+  **older** pages, and with both cursors zero it shows the newest
+  messages. The optional `previous_cursor` returned from a page is
+  passed to the next call as `before`; `next_cursor` is used for
+  new-event polling through `after`. Both directions cannot be used
+  simultaneously. This remains a private, locally mirrored inbox,
+  not a live remote WhatsApp-history reader.
 - `porcelainberryme_whatsapp_prepare(recipient, text)` creates a
   **non-sending** draft with a random 32-character `draft_id`. The
   recipient must be a direct person contact `123...@c.us`, never a
@@ -124,10 +130,14 @@ python -m porcelainberryme.whatsapp_preflight --network --preflight-only
 
 The preflight inspects real owner scope, 0600 API/control tokens, private
 approval/draft SQLite schema, private mirror SQLite schema, the existing
-`127.0.0.1:8873/healthz` endpoint, and the signed control-plane
+`127.0.0.1:8873/v1/owner-whatsapp-mirror/readyz` endpoint, and the signed control-plane
 `127.0.0.1:8874/v1/ip-calls/whoami` identity. No PII, secrets, message
 bodies, token values, database filenames or recipient contacts are written
-to its JSON output. A missing check exits with status 2. A successful
+to its JSON output. The dedicated mirror-ready endpoint returns
+HTTP 404 when mirroring is disabled and HTTP 503 when its private
+SQLite file/schema is unavailable. The general `/healthz` endpoint
+is deliberately not sufficient, because the process can run with
+WhatsApp mirroring disabled. A missing check exits with status 2. A successful
 `--preflight-only` exits 0, but that does **not** establish real production
 acceptance. Without `--preflight-only`, even a successful configuration
 check exits with status 3, because live provider/phone acceptance remains

@@ -124,10 +124,15 @@ def evaluate(*, env=None, network: bool = False) -> dict:
     check("whatsapp_signed_call_control_token", control_token is not None)
 
     if network:
-        mirror = _probe_loopback(8873, "/healthz")
-        check("whatsapp_signed_mirror_loopback_alive",
-              mirror is not None and mirror.get("status") == "up"
-              and mirror.get("mode") == "inbound_only", live=True)
+        # Generic /healthz also succeeds when WhatsApp mirroring is OFF.
+        # Release readiness must prove the opt-in mirror is enabled and
+        # its private database/schema is actually readable.
+        mirror = _probe_loopback(
+            8873, "/v1/owner-whatsapp-mirror/readyz",
+        )
+        check("whatsapp_owner_mirror_readiness",
+              mirror is not None and mirror.get("status") == "ready"
+              and mirror.get("scope") == "owner_whatsapp_mirror", live=True)
         identity = (_probe_loopback(
             8874, "/v1/ip-calls/whoami", bearer=control_token,
         ) if control_token is not None else None)
