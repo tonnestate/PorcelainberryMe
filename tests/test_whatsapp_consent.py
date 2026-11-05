@@ -139,6 +139,65 @@ class OwnerDraftLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(PermissionError, "not_reviewable"):
             self.store.review(item["draft_id"])
 
+    def test_host_revokes_approved_but_not_yet_dispatched_send(self):
+        item = self.draft()
+        details = self.store.review(item["draft_id"])
+        self.store.confirm(
+            draft_id=item["draft_id"],
+            verified_recipient=details["recipient"],
+            verified_text=details["text"],
+        )
+        self.assertEqual(self.store.revoke(item["draft_id"])["state"], "REVOKED")
+        with patch("porcelainberryme.whatsapp_mcp.TonnEstateWhatsAppTransport.send") as send:
+            self.assertEqual(self.owner.send(item["draft_id"])["state"], "REVOKED")
+            send.assert_not_called()
+
+    def test_unknown_send_mapping_is_retained_for_reconciliation(self):
+        item = self.draft()
+        details = self.store.review(item["draft_id"])
+        self.store.confirm(
+            draft_id=item["draft_id"],
+            verified_recipient=details["recipient"],
+            verified_text=details["text"],
+        )
+        approved_id, view = self.store.resolve(item["draft_id"])
+        self.assertEqual(view["state"], "APPROVED")
+        with sqlite3.connect(self.database) as db:
+            db.execute(
+                "UPDATE whatsapp_mcp_approvals SET state='UNKNOWN' "
+                "WHERE approval_id=?", (approved_id,),
+            )
+            db.execute(
+                "UPDATE whatsapp_mcp_drafts SET expires_at=0 "
+                "WHERE draft_id=?", (item["draft_id"],),
+            )
+        self.assertEqual(self.store.prune(retention_days=1), 0)
+        self.assertEqual(self.owner.status(item["draft_id"])["state"], "UNKNOWN")
+        with patch("porcelainberryme.whatsapp_mcp.TonnEstateWhatsAppTransport.send") as send:
+            self.assertEqual(self.owner.send(item["draft_id"])["state"], "UNKNOWN")
+            send.assert_not_called()
+
+    def test_old_confirmed_send_mapping_can_be_pruned(self):
+        item = self.draft()
+        details = self.store.review(item["draft_id"])
+        self.store.confirm(
+            draft_id=item["draft_id"],
+            verified_recipient=details["recipient"],
+            verified_text=details["text"],
+        )
+        approved_id, _ = self.store.resolve(item["draft_id"])
+        with sqlite3.connect(self.database) as db:
+            db.execute(
+                "UPDATE whatsapp_mcp_approvals SET state='ACCEPTED' "
+                "WHERE approval_id=?", (approved_id,),
+            )
+            db.execute(
+                "UPDATE whatsapp_mcp_drafts SET expires_at=0 "
+                "WHERE draft_id=?", (item["draft_id"],),
+            )
+        self.assertEqual(self.store.prune(retention_days=1), 1)
+        self.assertIsNone(self.store.status(item["draft_id"]))
+
     def test_draft_preparation_never_accepts_groups_or_empty_content(self):
         for recipient, text in (
             ("12345@g.us", "Hallo"),
