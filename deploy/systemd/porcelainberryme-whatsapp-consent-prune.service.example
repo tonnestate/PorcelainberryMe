@@ -1,0 +1,27 @@
+# TEMPLATE ONLY. Verify service user, paths and owner-specific environment.
+# Host-only maintenance; never approves, sends or exposes customer contents.
+[Unit]
+Description=PorcelainberryMe owner WhatsApp consent retention
+After=porcelainberryme-call-control.service
+ConditionPathExists=/etc/porcelainberryme/owner-mcp.env
+
+[Service]
+Type=oneshot
+User=porcelainberryme
+Group=porcelainberryme
+WorkingDirectory=/opt/porcelainberryme
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/porcelainberryme/owner-mcp.env
+ExecStart=/opt/porcelainberryme/venv/bin/python -m porcelainberryme.whatsapp_owner_consent prune
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/porcelainberryme
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
