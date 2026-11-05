@@ -195,3 +195,32 @@ korrektes Verhalten unter Last und klaren Betrieb. Solange der
 VPS- und Smartphone-Zugang nicht für die Abnahme verbunden ist, kann
 hier ausschließlich das Repository entwickelt und getestet werden.
 Keine öffentliche E.164-Telefonie ohne echten Carrier/SIP-Anschluss.
+
+## WhatsApp-MCP: separate Produktionsabnahme
+
+Die vorhandene persönliche WhatsApp-Verbindung wird ausschließlich über den
+bereits existierenden TonnEstate/Aurora/n8n-Transport verwendet. Die neue
+Quellcode-Abnahme enthält signiertes Loopback-Ingress, private Inbox,
+MCP-Draft-Erstellung, explizite lokale Eigentümerfreigabe, einmaligen
+idempotenten Versand über den Originaladapter, Widerruf, Quarantäne- und
+Aufbewahrungsverträge sowie ein unabhängiges, nicht mutierendes
+Host-Preflight. Die `tests/test_whatsapp_e2e.py`-Integration benutzt einen
+echten lokalen HTTP-Listener und simuliert ausschließlich den externen
+Provider-HTTP-Antwortteil. Sie stellt **keine** tatsächlich zugestellte
+WhatsApp-Nachricht dar.
+
+Vor einer Live-Freigabe sind weiterhin die echten Host-Prüfungen unter
+`docs/WHATSAPP_MCP.md` erforderlich: korrekte 0600-Eigentümerdateien,
+MCP-/Call-Control-Identität, TonnEstate-Outbox-/Worker-Heartbeat,
+n8n-Wiederholung von HTTP 503, absichtlich unterbrochener und wieder
+aufgenommener End-to-End-Eingang, explizite Eigentümerfreigabe eines
+Testversands und Bestätigung des bereits vorhandenen WhatsApp-Providers.
+Die privaten TonnEstate-Actions-Jobs haben bisher keine Runner-Schritte
+ausgeführt; ein grüner PorcelainberryMe-Lauf ersetzt diesen Nachweis nicht.
+Die Freigabe eines benutzerdefinierten Remote-MCP-Zugangs in ChatGPT ist
+zusätzlich von dessen Plattformberechtigungen abhängig.
+
+Der Preflight `python -m porcelainberryme.whatsapp_preflight --network
+--preflight-only` prüft ausschließlich benannte lokale Voraussetzungen
+und gibt weder Inhalte noch Credentials aus. Sein Exitcode 0 darf nicht
+als `production_accepted=true` interpretiert werden.
