@@ -112,6 +112,49 @@ outbound approvals are not automatically deleted. The older host-only
 `OwnerWhatsAppApprovals.approve` API remains supported for previously
 authenticated first-party workflows.
 
+## Host-only production preflight
+
+The owner host can verify local configuration and optionally its loopback
+control-plane endpoints **without** sending a WhatsApp message:
+
+```sh
+python -m porcelainberryme.whatsapp_preflight --preflight-only
+python -m porcelainberryme.whatsapp_preflight --network --preflight-only
+```
+
+The preflight inspects real owner scope, 0600 API/control tokens, private
+approval/draft SQLite schema, private mirror SQLite schema, the existing
+`127.0.0.1:8873/healthz` endpoint, and the signed control-plane
+`127.0.0.1:8874/v1/ip-calls/whoami` identity. No PII, secrets, message
+bodies, token values, database filenames or recipient contacts are written
+to its JSON output. A missing check exits with status 2. A successful
+`--preflight-only` exits 0, but that does **not** establish real production
+acceptance. Without `--preflight-only`, even a successful configuration
+check exits with status 3, because live provider/phone acceptance remains
+unverified.
+
+Run the actual TonnEstate replay-worker `status` and `check` commands
+on its own host identity; this PB preflight cannot read another
+service-user's protected outbox or certify that n8n retries HTTP 503.
+In production, enable both the separately documented TonnEstate
+outbox systemd worker/health timer and the existing PorcelainberryMe
+inbound server before an end-to-end test.
+
+The host-only draft pruning command has supervised
+`deploy/systemd/porcelainberryme-whatsapp-consent-prune.service.example`
+and corresponding `.timer.example` templates. They must be reviewed,
+installed and enabled by the existing operator with the same private
+`/etc/porcelainberryme/owner-mcp.env` scope as the owner MCP process.
+
+**Required live acceptance before use:** Verify a real authenticated
+n8n direct-contact incoming event, exactly-one durable outbox replay,
+MCP inbox visibility and subject isolation, explicit human approval of
+an outbound draft, one original WhatsApp-bridge submission, verified
+provider receipt, restart recovery, secret-file permissions, backlog
+alarm and a deliberately injected outage. Do not assert actual contact
+delivery or read receipts without authoritative provider evidence.
+The live account was not contacted by the offline GitHub tests.
+
 ## Passive WhatsApp ingress from the existing TonnEstate consumer
 
 The owner account now has a separate opt-in signed ingestion endpoint
