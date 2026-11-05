@@ -144,6 +144,37 @@ class MirrorLoopbackTests(unittest.TestCase):
             method="POST", data=body, headers=headers,
         ), timeout=2)
 
+    def test_owner_mirror_has_distinct_readiness_from_generic_liveness(self):
+        base = f"http://127.0.0.1:{self.server.server_port}"
+        with urlopen(base + "/healthz", timeout=2) as response:
+            self.assertEqual(response.status, 200)
+        with urlopen(base + "/v1/owner-whatsapp-mirror/readyz",
+                     timeout=2) as response:
+            result = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(result, {
+                "status": "ready", "scope": "owner_whatsapp_mirror",
+            })
+
+    def test_unreadable_owner_mirror_returns_503_not_a_false_ready(self):
+        base = f"http://127.0.0.1:{self.server.server_port}"
+        file_path = Path(self.mirror.database)
+        file_path.chmod(0o644)
+        try:
+            with self.assertRaises(HTTPError) as response:
+                urlopen(base + "/v1/owner-whatsapp-mirror/readyz",
+                        timeout=2)
+            self.assertEqual(response.exception.code, 503)
+            self.assertEqual(json.loads(response.exception.read()),
+                             {"status": "not_ready"})
+            # Generic /healthz is deliberately only process liveness.
+            with urlopen(base + "/healthz", timeout=2) as response:
+                self.assertEqual(response.status, 200)
+            with self.assertRaises(PermissionError):
+                self.mirror.ingest(event())
+        finally:
+            file_path.chmod(0o600)
+
     def test_real_signed_http_idempotency_and_no_agent_queue(self):
         with self.post(event().to_dict()) as response:
             self.assertEqual(response.status, 202)
@@ -198,6 +229,17 @@ class MirrorLoopbackTests(unittest.TestCase):
             with self.assertRaises(HTTPError) as denied:
                 urlopen(req, timeout=2)
             self.assertEqual(denied.exception.code, 404)
+            with urlopen(
+                f"http://127.0.0.1:{alternate.server_port}/healthz",
+                timeout=2,
+            ) as alive:
+                self.assertEqual(alive.status, 200)
+            with self.assertRaises(HTTPError) as not_enabled:
+                urlopen(
+                    f"http://127.0.0.1:{alternate.server_port}"
+                    "/v1/owner-whatsapp-mirror/readyz", timeout=2,
+                )
+            self.assertEqual(not_enabled.exception.code, 404)
         finally:
             alternate.shutdown()
             alternate.server_close()
