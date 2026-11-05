@@ -152,6 +152,24 @@ class OwnerDraftLifecycleTests(unittest.TestCase):
             self.assertEqual(self.owner.send(item["draft_id"])["state"], "REVOKED")
             send.assert_not_called()
 
+    def test_host_cannot_cancel_dispatch_already_attempted(self):
+        item = self.draft()
+        reviewed = self.store.review(item["draft_id"])
+        self.store.confirm(
+            draft_id=item["draft_id"],
+            verified_recipient=reviewed["recipient"],
+            verified_text=reviewed["text"],
+        )
+        approval_id, _ = self.store.resolve(item["draft_id"])
+        with sqlite3.connect(self.database) as db:
+            db.execute(
+                "UPDATE whatsapp_mcp_approvals SET state='ATTEMPTING' "
+                "WHERE approval_id=?", (approval_id,),
+            )
+        with self.assertRaisesRegex(PermissionError, "already_attempted"):
+            self.store.revoke(item["draft_id"])
+        self.assertEqual(self.owner.status(item["draft_id"])["state"], "UNKNOWN")
+
     def test_unknown_send_mapping_is_retained_for_reconciliation(self):
         item = self.draft()
         details = self.store.review(item["draft_id"])
