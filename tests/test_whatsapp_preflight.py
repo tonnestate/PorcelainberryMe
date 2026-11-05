@@ -110,7 +110,7 @@ class WhatsAppPreflightTests(unittest.TestCase):
         def probe(port, path, *, bearer=""):
             probes.append((port, path, bool(bearer)))
             if port == 8873:
-                return {"status": "up", "mode": "inbound_only"}
+                return {"status": "ready", "scope": "owner_whatsapp_mirror"}
             return {
                 "tenant": "tenantA", "subject": "owner_agent",
                 "role": "agent",
@@ -120,18 +120,33 @@ class WhatsAppPreflightTests(unittest.TestCase):
             snapshot = whatsapp_preflight.evaluate(env=self.env, network=True)
         self.assertTrue(snapshot["configuration_and_requested_runtime_passed"])
         self.assertEqual(probes, [
-            (8873, "/healthz", False),
+            (8873, "/v1/owner-whatsapp-mirror/readyz", False),
             (8874, "/v1/ip-calls/whoami", True),
         ])
         with patch.object(
             whatsapp_preflight, "_probe_loopback",
             side_effect=lambda port, path, **kwargs: (
-                {"status": "up", "mode": "inbound_only"} if port == 8873 else
+                {"status": "ready", "scope": "owner_whatsapp_mirror"}
+                if port == 8873 else
                 {"tenant": "ANOTHER", "subject": "owner_agent", "role": "agent"}
             ),
         ):
             failed = whatsapp_preflight.evaluate(env=self.env, network=True)
         self.assertFalse(failed["configuration_and_requested_runtime_passed"])
+
+    def test_generic_http_liveness_does_not_pass_owner_mirror_readiness(self):
+        with patch.object(whatsapp_preflight, "_probe_loopback",
+                          side_effect=lambda port, path, **kwargs: (
+                              {"status": "up", "mode": "inbound_only"}
+                              if port == 8873 else
+                              {"tenant": "tenantA", "subject": "owner_agent",
+                               "role": "agent"}
+                          )):
+            result = whatsapp_preflight.evaluate(env=self.env, network=True)
+        self.assertFalse(result["configuration_and_requested_runtime_passed"])
+        mirror_check = next(item for item in result["checks"]
+                            if item["name"] == "whatsapp_owner_mirror_readiness")
+        self.assertEqual(mirror_check["status"], "FAIL")
 
     def test_cli_explicit_preflight_only_exit_semantics(self):
         output = StringIO()
