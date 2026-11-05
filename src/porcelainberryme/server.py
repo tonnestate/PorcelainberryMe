@@ -65,6 +65,14 @@ def handler_for(ledger: Ledger, *, secret: str,
         def do_GET(self):
             if self.path == "/healthz":
                 self._reply(200, {"status": "up", "mode": "inbound_only"})
+            elif self.path == "/v1/owner-whatsapp-mirror/readyz":
+                if mirror is None:
+                    self._reply(404, {"error": "whatsapp_mirror_disabled"})
+                elif mirror.ready():
+                    self._reply(200, {"status": "ready",
+                                      "scope": "owner_whatsapp_mirror"})
+                else:
+                    self._reply(503, {"status": "not_ready"})
             else:
                 self._reply(404, {"error": "not_found"})
 
