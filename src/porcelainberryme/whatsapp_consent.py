@@ -155,8 +155,8 @@ class OwnerWhatsAppDrafts:
                 verified_text: str) -> dict:
         """Host only; operator must authenticate owner and verify exact details.
 
-        Repeated confirmations are idempotent. The immutable draft ID is
-        used as the reference for the separately durable send approval.
+        The immutable draft ID supplies a content-bound consent reference.
+        Approval creation and draft state transition commit atomically.
         """
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -174,14 +174,45 @@ class OwnerWhatsAppDrafts:
                  row["body"]], separators=(",", ":"), ensure_ascii=False,
             ).encode("utf-8")).hexdigest():
                 raise PermissionError("whatsapp_draft_integrity_invalid")
-            # Host-only consent record is committed before draft mapping.
-            # If the process crashes in between, repeating the same
-            # verified consent reference returns the same approval ID.
-            approval_id = self.approvals.approve(
-                tenant=self.tenant, agent=self.agent, sender=self.sender,
-                recipient=row["recipient"], text=row["body"],
-                consent_reference="draft:" + draft_id, ttl_seconds=120,
-            )
+            # One SQLite transaction across BOTH the verified approval
+            # and draft mapping. No database-lock deadlock and no orphan
+            # send approval if the operator revokes concurrently.
+            consent_hash = sha256(json.dumps(
+                [self.tenant, "draft:" + draft_id],
+            ).encode("utf-8")).hexdigest()
+            previous = db.execute(
+                "SELECT * FROM whatsapp_mcp_approvals "
+                "WHERE tenant=? AND consent_hash=?",
+                (self.tenant, consent_hash),
+            ).fetchone()
+            if previous is not None:
+                if any(previous[key] != expected for key, expected in (
+                    ("agent", self.agent), ("sender", self.sender),
+                    ("recipient", row["recipient"]), ("body", row["body"]),
+                )):
+                    raise PermissionError("whatsapp_consent_reference_conflict")
+                approval_id = previous["approval_id"]
+            else:
+                active = db.execute(
+                    "SELECT COUNT(*) FROM whatsapp_mcp_approvals "
+                    "WHERE tenant=? AND agent=? AND state='APPROVED' "
+                    "AND expires_at>?",
+                    (self.tenant, self.agent, int(time.time())),
+                ).fetchone()[0]
+                retained = db.execute(
+                    "SELECT COUNT(*) FROM whatsapp_mcp_approvals "
+                    "WHERE tenant=? AND agent=?", (self.tenant, self.agent),
+                ).fetchone()[0]
+                if active >= 64 or retained >= 10000:
+                    raise OverflowError("whatsapp_approval_capacity_exceeded")
+                approval_id = secrets.token_hex(16)
+                db.execute(
+                    "INSERT INTO whatsapp_mcp_approvals VALUES "
+                    "(?,?,?,?,?,?,?,?,'APPROVED')",
+                    (approval_id, self.tenant, self.agent, self.sender,
+                     row["recipient"], row["body"], consent_hash,
+                     int(time.time()) + 120),
+                )
             db.execute(
                 "UPDATE whatsapp_mcp_drafts SET state='APPROVED',"
                 "approval_id=? WHERE draft_id=? AND state='DRAFT'",
