@@ -64,6 +64,28 @@ class MirrorStorageTests(unittest.TestCase):
         self.assertEqual(len(projection["messages"]), 1)
         self.assertEqual(projection["messages"][0]["text"], "Guten Tag")
 
+    def test_history_cursor_skips_legacy_foreign_owner_rows(self):
+        location = Path(self.temp.name) / "legacy-mixed.sqlite3"
+        old = Ledger(location)
+        old.ingest(event(external_id="authorized-old"))
+        for n in range(4):
+            old.ingest(event(
+                external_id=f"foreign-{n}",
+                recipient="different_owner",
+            ))
+        inbox = OwnerWhatsAppInbox(
+            database=str(location), tenant="owner_tenant",
+            owner_destination="verified_owner",
+        )
+        first = inbox.recent(limit=2)
+        self.assertEqual(first["messages"], [])
+        self.assertGreater(first["previous_cursor"], 0)
+        second = inbox.recent(before=first["previous_cursor"])
+        self.assertEqual(
+            [row["external_id"] for row in second["messages"]],
+            ["authorized-old"],
+        )
+
     def test_hard_tenant_owner_and_sender_scope(self):
         for props in (
             {"tenant_id": "another"},
@@ -93,6 +115,42 @@ class MirrorStorageTests(unittest.TestCase):
             ["after-retention"],
         )
         self.assertEqual(self.mirror.purge_expired(), 0)
+
+    def test_history_pages_reach_all_older_messages_without_duplicates(self):
+        for n in range(35):
+            self.mirror.ingest(event(external_id=f"history-{n:03}"))
+        first = self.inbox.recent(limit=10)
+        self.assertEqual(
+            [item["external_id"] for item in first["messages"]],
+            [f"history-{n:03}" for n in range(25, 35)],
+        )
+        self.assertEqual(first["next_cursor"], 35)
+        older = self.inbox.recent(before=first["previous_cursor"], limit=10)
+        self.assertEqual(
+            [item["external_id"] for item in older["messages"]],
+            [f"history-{n:03}" for n in range(15, 25)],
+        )
+        oldest = self.inbox.recent(before=older["previous_cursor"], limit=30)
+        self.assertEqual(
+            [item["external_id"] for item in oldest["messages"]],
+            [f"history-{n:03}" for n in range(15)],
+        )
+        self.assertEqual(
+            self.inbox.recent(before=oldest["previous_cursor"])["messages"], [],
+        )
+        self.mirror.ingest(event(external_id="history-new"))
+        fresh = self.inbox.recent(after=first["next_cursor"])
+        self.assertEqual([item["external_id"] for item in fresh["messages"]],
+                         ["history-new"])
+
+    def test_inbox_rejects_ambiguous_or_invalid_history_cursors(self):
+        for kwargs in (
+            {"before": -1}, {"before": True},
+            {"before": 1 << 63}, {"after": 5, "before": 3},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    self.inbox.recent(**kwargs)
 
     def test_legacy_inbound_ledger_stays_readable_if_mirror_table_absent(self):
         location = Path(self.temp.name) / "legacy.sqlite3"
