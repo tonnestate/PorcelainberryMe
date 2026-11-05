@@ -71,26 +71,32 @@ read-only scope escalation. They do not start an installed MCP SDK or host.
 
 ## Opt-in personal WhatsApp MCP (existing owner account only)
 
-A dedicated authenticated, supervised owner-agent MCP process can additionally
-expose `porcelainberryme_whatsapp_inbox`,
+A dedicated, authenticated, supervised owner-agent MCP process can register
+four optional WhatsApp tools: `porcelainberryme_whatsapp_inbox`,
+`porcelainberryme_whatsapp_prepare`,
 `porcelainberryme_whatsapp_send` and
-`porcelainberryme_whatsapp_send_status`. They are **absent by default**.
-No new WhatsApp transport or second consumer is created: sending uses the
-existing bearer-authorized TonnEstate/Aurora endpoint. Incoming messages are
-read only from an existing private, owner-scoped PorcelainberryMe event
-ledger; this is not remote WhatsApp history synchronization.
+`porcelainberryme_whatsapp_send_status`. All are **absent by default**.
 
-The host must independently verify the human owner's consent for the exact
-recipient and message, and create one short-lived approval in the persistent
-`OwnerWhatsAppApprovals` store. MCP can only submit that opaque approval ID,
-not a freeform message or contact. Provider-accepted means **not**
-human-delivered, and ambiguous results never trigger automatic resends.
-The signed call-control identity and original TonnEstate owner bearer
-remain separate authorization checks. The operator must retain, purge,
-secure and recover the persistent approval database.
+The MCP model can prepare an inert, expiring draft with an exact
+recipient/body, but cannot authorize it. A separately authenticated,
+interactive first-party owner host reviews the precise UTF-8 content and
+records explicit consent in the existing private SQLite approval store.
+After that, `whatsapp_send(draft_id)` can make exactly one provider
+attempt via the **existing** TonnEstate/Aurora owner-only API.
+No second WhatsApp transport, session, login or consumer is created.
+Unapproved or changed drafts never reach the provider.
 
-Complete configuration and acceptance boundaries:
-[Personal WhatsApp MCP](WHATSAPP_MCP.md).
+Incoming messages are limited to already-authenticated private owner
+events; this is not a remote WhatsApp history synchronizer. A provider
+acceptance is not proof of human delivery or reading; ambiguous
+provider results remain UNKNOWN without automatic resend.
+The signed call-control identity, original TonnEstate API bearer and
+host-only operator filesystem access are separate authorization checks.
+The operator must supervise the process and maintain private retention
+without deleting unknown work.
+
+Complete trusted host operation, owner consent command, source
+preflight and acceptance boundaries: [Personal WhatsApp MCP](WHATSAPP_MCP.md).
 
 ## Customer call / CRM integration: still open
 
