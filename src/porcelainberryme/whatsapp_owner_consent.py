@@ -16,7 +16,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Review and approve one exact personal WhatsApp draft",
     )
-    parser.add_argument("action", choices=("review", "approve", "reject", "prune"))
+    parser.add_argument("action", choices=("review", "approve", "reject", "revoke", "prune"))
     parser.add_argument("draft_id", nargs="?")
     args = parser.parse_args()
 
@@ -41,7 +41,7 @@ def main() -> None:
     if args.draft_id is None:
         parser.error("draft_id_required")
 
-    if args.action in ("approve", "reject") and (
+    if args.action in ("approve", "reject", "revoke") and (
             not sys.stdin.isatty() or not sys.stdout.isatty()):
         parser.error("interactive_authenticated_owner_terminal_required")
 
@@ -50,6 +50,13 @@ def main() -> None:
         # unattended logs is forbidden: review only in an operator terminal.
         if not sys.stdout.isatty():
             parser.error("private_review_terminal_required")
+
+    if args.action == "revoke":
+        phrase = "REVOKE " + args.draft_id
+        if input("Type " + phrase + " to revoke an unsent draft: ").strip() != phrase:
+            parser.error("whatsapp_explicit_revocation_missing")
+        print("state:", store.revoke(args.draft_id)["state"])
+        return
 
     review = store.review(args.draft_id)
     print("Draft ID:", review["draft_id"])
