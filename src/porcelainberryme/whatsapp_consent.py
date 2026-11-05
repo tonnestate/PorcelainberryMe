@@ -274,7 +274,7 @@ class OwnerWhatsAppDrafts:
                 "(state='APPROVED' AND EXISTS "
                 "(SELECT 1 FROM whatsapp_mcp_approvals AS a "
                 "WHERE a.approval_id=whatsapp_mcp_drafts.approval_id "
-                "AND a.state IN ('ACCEPTED','FAILED','EXPIRED','REVOKED')))",
+                "AND a.state IN ('ACCEPTED','FAILED','EXPIRED','REVOKED'))))",
                 (self.tenant, self.agent, self.sender,
                  int(time.time()) - retention_days * 86400),
             )
