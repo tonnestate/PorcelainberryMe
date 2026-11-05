@@ -182,11 +182,12 @@ class CrossRepositoryWhatsAppContract(unittest.TestCase):
 
         # An operator or the retention scheduler safely frees space in
         # the receiving store; the original TonnEstate event must replay.
-        with closing(sqlite3.connect(self.pb_file)) as db:
-            db.execute(
+        with sqlite3.connect(self.pb_file) as db:
+            removed = db.execute(
                 "DELETE FROM whatsapp_owner_mirror "
                 "WHERE external_id='older-00000'"
             )
+            self.assertEqual(removed.rowcount, 1)
         future = self.store(clock=lambda: int(time.time()) + 400)
         self.assertEqual(
             future.drain_one(te_mirror._signed_push)["state"], "ACKED"
