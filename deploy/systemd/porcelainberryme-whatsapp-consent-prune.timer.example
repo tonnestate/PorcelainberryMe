@@ -1,0 +1,11 @@
+# TEMPLATE ONLY. Enable after validating owner-mcp.env and DB ownership.
+[Unit]
+Description=Clean up expired owner WhatsApp drafts and terminal approvals
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=porcelainberryme-whatsapp-consent-prune.service
+
+[Install]
+WantedBy=timers.target
