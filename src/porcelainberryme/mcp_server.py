@@ -1,4 +1,4 @@
-"""Read-only MCP visibility into existing authenticated PorcelainberryMe calls.
+"""Read-only-by-default MCP visibility with explicit owner-approved actions.
 
 No new call controller, customer directory, owner-harness authority, media
 session or network listener. The stdio MCP process inherits a trusted
@@ -350,7 +350,7 @@ class MCPCallVisibility:
 
 
 def build_server(visibility: MCPCallVisibility):
-    """Register only explicitly defined, side-effect-free tools."""
+    """Register fixed tools; privileged actions require host-bound authorization."""
     if not isinstance(visibility, MCPCallVisibility):
         raise TypeError("mcp_trusted_visibility_required")
     try:
