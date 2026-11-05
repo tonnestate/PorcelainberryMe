@@ -73,12 +73,16 @@ class MirrorStorageTests(unittest.TestCase):
                 external_id=f"foreign-{n}",
                 recipient="different_owner",
             ))
+        old.ingest(event(external_id="authorized-new"))
         inbox = OwnerWhatsAppInbox(
             database=str(location), tenant="owner_tenant",
             owner_destination="verified_owner",
         )
-        first = inbox.recent(limit=2)
-        self.assertEqual(first["messages"], [])
+        first = inbox.recent(limit=1)
+        self.assertEqual(
+            [row["external_id"] for row in first["messages"]],
+            ["authorized-new"],
+        )
         self.assertGreater(first["previous_cursor"], 0)
         second = inbox.recent(before=first["previous_cursor"])
         self.assertEqual(
