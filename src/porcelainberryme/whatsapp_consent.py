@@ -252,11 +252,12 @@ class OwnerWhatsAppDrafts:
                     "WHERE approval_id=? AND state='APPROVED'",
                     (row["approval_id"],),
                 )
-                if revoked.rowcount == 1:
-                    db.execute(
-                        "UPDATE whatsapp_mcp_drafts SET state='REVOKED' "
-                        "WHERE draft_id=? AND state='APPROVED'", (draft_id,),
-                    )
+                if revoked.rowcount != 1:
+                    raise PermissionError("whatsapp_send_already_attempted")
+                db.execute(
+                    "UPDATE whatsapp_mcp_drafts SET state='REVOKED' "
+                    "WHERE draft_id=? AND state='APPROVED'", (draft_id,),
+                )
             return self._public(self._read(db, draft_id))
 
     def prune(self, retention_days: int = 30) -> int:
