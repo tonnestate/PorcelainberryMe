@@ -252,6 +252,39 @@ class OwnerDraftLifecycleTests(unittest.TestCase):
                 ).fetchone()[0], 1,
             )
 
+    def test_permissions_changed_after_startup_block_approval_and_send(self):
+        item = self.draft("Do not send without 0600 approval file")
+        location = Path(self.database)
+        location.chmod(0o644)
+        try:
+            with self.assertRaisesRegex(PermissionError, "private_file_permissions"):
+                self.store.review(item["draft_id"])
+            with self.assertRaisesRegex(PermissionError, "private_file_permissions"):
+                self.owner.status(item["draft_id"])
+            with patch("porcelainberryme.whatsapp_mcp.TonnEstateWhatsAppTransport.send") as send:
+                with self.assertRaisesRegex(PermissionError, "private_file_permissions"):
+                    self.owner.send(item["draft_id"])
+                send.assert_not_called()
+        finally:
+            location.chmod(0o600)
+
+    def test_replacing_live_approval_database_with_symlink_is_rejected(self):
+        item = self.draft("Do not follow a swapped path")
+        original = Path(self.database)
+        moved = original.with_name("original-database.sqlite3")
+        original.rename(moved)
+        try:
+            original.symlink_to(moved)
+            with self.assertRaisesRegex(PermissionError, "private_file_permissions"):
+                self.owner.status(item["draft_id"])
+            with self.assertRaisesRegex(PermissionError, "private_file_permissions"):
+                self.owner.prepare("49151234567@c.us", "Unsafe draft")
+        finally:
+            if original.is_symlink():
+                original.unlink()
+            moved.rename(original)
+        self.assertEqual(self.owner.status(item["draft_id"])["state"], "DRAFT")
+
     def test_corrupt_draft_fingerprint_fails_closed(self):
         item = self.draft()
         with sqlite3.connect(self.database) as db:
