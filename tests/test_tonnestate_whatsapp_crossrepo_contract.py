@@ -157,6 +157,45 @@ class CrossRepositoryWhatsAppContract(unittest.TestCase):
         self.assertEqual(self.store().stats()["pending"], 0)
         self.assertFalse(Path(self.pb_file).is_symlink())
 
+    def test_full_real_mirror_returns_http_507_and_outbox_retains_then_recovers(self):
+        from porcelainberryme.contracts import InboundEvent
+
+        # Directly fill the current private owner mirror to its bounded
+        # capacity. This is the receiving service's real SQLite store.
+        for i in range(self.pb_mirror.max_rows):
+            self.pb_mirror.ingest(InboundEvent(
+                tenant_id="tenant1", channel="whatsapp",
+                external_id=f"older-{i:05d}", sender="49151234567@c.us",
+                recipient="owner1", text=f"older-{i:05d}",
+            ))
+        self.assertTrue(self.spool())
+        outcome = self.store().drain_one(te_mirror._signed_push)
+        self.assertEqual(outcome["state"], "PENDING")
+        self.assertEqual(self.store().stats()["pending"], 1)
+        self.assertEqual(
+            [x["external_id"] for x in self.inbox()["messages"]
+             if x["external_id"] == self.body["message_id"]], [],
+        )
+
+        # An operator or the retention scheduler safely frees space in
+        # the receiving store; the original TonnEstate event must replay.
+        with closing(sqlite3.connect(self.pb_file)) as db:
+            db.execute(
+                "DELETE FROM whatsapp_owner_mirror "
+                "WHERE external_id='older-00000'"
+            )
+        future = self.store(clock=lambda: int(time.time()) + 400)
+        self.assertEqual(
+            future.drain_one(te_mirror._signed_push)["state"], "ACKED"
+        )
+        self.assertEqual(self.store().stats()["pending"], 0)
+        self.assertEqual(self.store().stats()["acknowledged"], 1)
+        self.assertEqual(
+            [x["external_id"] for x in self.inbox()["messages"]][-1],
+            self.body["message_id"],
+        )
+        self.assertEqual(self.pb_ledger.pending(tenant_id="tenant1"), [])
+
     def test_private_mirror_readiness_reports_actual_schema(self):
         self.assertTrue(self.pb_mirror.ready())
         with closing(sqlite3.connect(self.pb_file)) as db:
