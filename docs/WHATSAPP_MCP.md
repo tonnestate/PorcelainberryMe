@@ -50,37 +50,110 @@ continue to use the existing upstream WhatsApp authentication. The API
 token file is re-read for each attempted send and never returned in MCP.
 No token/credential/account contact is committed to Git.
 
-## Exact MCP tools
+## Exact MCP tools and mandatory human consent
 
-- \`porcelainberryme_whatsapp_inbox(after=0, limit=20)\` reads at most 30
-  previously authenticated personal WhatsApp *inbound* messages, scoped
-  by configured tenant and owner destination. This is not a live account
-  history reader: the trusted existing n8n/Aurora ingress must persist
-  such events in the owner-only Ledger first. A separate message consumer
-  must not be started.
-- \`porcelainberryme_whatsapp_send(approval_id)\` atomically consumes an
-  already-approved message and invokes the existing TonnEstate/Aurora
-  owner-only sender once. It cannot select a new recipient or change text.
-- \`porcelainberryme_whatsapp_send_status(approval_id)\` returns the bounded
-  outcome without exposing the message text, target, bearer or provider
-  receipt.
+- `porcelainberryme_whatsapp_inbox(after=0, limit=20)` reads only
+  previously authenticated owner inbound events from the private local
+  mirror. This is not a live remote WhatsApp-history reader.
+- `porcelainberryme_whatsapp_prepare(recipient, text)` creates a
+  **non-sending** draft with a random 32-character `draft_id`. The
+  recipient must be a direct person contact `123...@c.us`, never a
+  group; body length is at most 3,000 Unicode characters. It remains
+  unapproved for at most 600 seconds.
+- `porcelainberryme_whatsapp_send(approval_id)` accepts either a
+  previously host-approved legacy approval ID or the prepared
+  `draft_id`. An unapproved, rejected or expired draft **never
+  reaches** TonnEstate. An approved draft maps atomically to the
+  immutable original recipient/body and makes one delivery attempt
+  through the existing owner-only transport.
+- `porcelainberryme_whatsapp_send_status(approval_id)` returns the
+  actual approval/dispatch state, not a delivery or read receipt.
 
-Host-only Python uses
-\`OwnerWhatsAppApprovals(database).approve(tenant=..., agent=...,
-sender=..., recipient=..., text=..., consent_reference=...)\` only after
-verifying a real owner's explicit consent for that specific message and
-recipient. Distinct messages need distinct consent references; replay
-of a reference is idempotent and changed content is rejected.
-\`revoke(...)\` is a host-only method and succeeds only before dispatch.
+### Trusted FruitStack/Hermes operator review
 
-Successful TonnEstate acceptance is \`ACCEPTED\`, **not** confirmation of
-delivery/read by the contact. Provider timeout, unclear HTTP status and
-crash between dispatch and receipt are \`UNKNOWN\` and never blindly
-retried. An attempt already claimed by another process likewise returns
-\`UNKNOWN\` until its result can be reconciled. Definite rejection is
-\`FAILED\`. Approval expiry defaults to 120 seconds, configurable by
-the host to 30–300 seconds, and 64 simultaneous pending approvals are
-the default ceiling per owner agent.
+**Neither a model nor an MCP tool can approve a draft.** The owner
+authenticates independently to the existing first-party host, whose
+service-user filesystem permissions protect the private 0600 SQLite
+approvals database.
+
+1. Hermes invokes `porcelainberryme_whatsapp_prepare` and receives
+   `draft_id`, state `DRAFT`; no send or network call occurs.
+2. The authenticated owner opens a dedicated local operator terminal
+   on that trusted host, with the same `PB_MCP_WHATSAPP_ENABLED=1`,
+   `PB_MCP_WHATSAPP_OWNER_TENANT`,
+   `PB_MCP_WHATSAPP_OWNER_AGENT`,
+   `PB_MCP_WHATSAPP_OWNER_SENDER` and
+   `PB_MCP_WHATSAPP_APPROVALS_DB` values as the supervised MCP
+   owner agent. The operator runs
+   `python -m porcelainberryme.whatsapp_owner_consent approve DRAFT_ID`.
+3. The host displays the **exact** recipient, Unicode message,
+   content fingerprint and expiry. The owner types
+   `APPROVE DRAFT_ID` in the real interactive terminal. Non-interactive
+   stdin/stdout, invalid identity or an expired draft are rejected.
+   The approval and draft-to-approval mapping commit in one SQLite
+   transaction. The operator can instead use `reject DRAFT_ID`.
+   `review DRAFT_ID` is available only on a local, interactive terminal.
+4. Hermes calls `porcelainberryme_whatsapp_send(draft_id)` only after
+   explicit approval. Provider acceptance reports `ACCEPTED`, not
+   recipient delivery. An ambiguous provider outcome is `UNKNOWN`,
+   never automatically resent. A second send with the same draft ID
+   does **not** send again.
+
+The host may integrate the same `OwnerWhatsAppDrafts.review` and
+`confirm` methods into an existing independently authenticated
+consent UI, but must preserve explicit owner action and the exact
+recipient/body comparison. Do not expose these host-only methods to
+MCP tools or accept a model's claimed consent as authority.
+
+Run `python -m porcelainberryme.whatsapp_owner_consent prune` from
+the trusted host's existing maintenance scheduler to remove expired
+drafts and old terminal approvals after 30 days. UNKNOWN/ambiguous
+outbound approvals are not automatically deleted. The older host-only
+`OwnerWhatsAppApprovals.approve` API remains supported for previously
+authenticated first-party workflows.
+
+## Host-only production preflight
+
+The owner host can verify local configuration and optionally its loopback
+control-plane endpoints **without** sending a WhatsApp message:
+
+```sh
+python -m porcelainberryme.whatsapp_preflight --preflight-only
+python -m porcelainberryme.whatsapp_preflight --network --preflight-only
+```
+
+The preflight inspects real owner scope, 0600 API/control tokens, private
+approval/draft SQLite schema, private mirror SQLite schema, the existing
+`127.0.0.1:8873/healthz` endpoint, and the signed control-plane
+`127.0.0.1:8874/v1/ip-calls/whoami` identity. No PII, secrets, message
+bodies, token values, database filenames or recipient contacts are written
+to its JSON output. A missing check exits with status 2. A successful
+`--preflight-only` exits 0, but that does **not** establish real production
+acceptance. Without `--preflight-only`, even a successful configuration
+check exits with status 3, because live provider/phone acceptance remains
+unverified.
+
+Run the actual TonnEstate replay-worker `status` and `check` commands
+on its own host identity; this PB preflight cannot read another
+service-user's protected outbox or certify that n8n retries HTTP 503.
+In production, enable both the separately documented TonnEstate
+outbox systemd worker/health timer and the existing PorcelainberryMe
+inbound server before an end-to-end test.
+
+The host-only draft pruning command has supervised
+`deploy/systemd/porcelainberryme-whatsapp-consent-prune.service.example`
+and corresponding `.timer.example` templates. They must be reviewed,
+installed and enabled by the existing operator with the same private
+`/etc/porcelainberryme/owner-mcp.env` scope as the owner MCP process.
+
+**Required live acceptance before use:** Verify a real authenticated
+n8n direct-contact incoming event, exactly-one durable outbox replay,
+MCP inbox visibility and subject isolation, explicit human approval of
+an outbound draft, one original WhatsApp-bridge submission, verified
+provider receipt, restart recovery, secret-file permissions, backlog
+alarm and a deliberately injected outage. Do not assert actual contact
+delivery or read receipts without authoritative provider evidence.
+The live account was not contacted by the offline GitHub tests.
 
 ## Passive WhatsApp ingress from the existing TonnEstate consumer
 

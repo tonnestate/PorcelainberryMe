@@ -273,16 +273,45 @@ class OwnerWhatsAppMCP:
         OwnerWhatsAppApprovals.scope(tenant, agent, sender)
         self.tenant, self.agent, self.sender = tenant, agent, sender
         self.approvals = OwnerWhatsAppApprovals(approvals_db)
+        from .whatsapp_consent import OwnerWhatsAppDrafts
+        self.drafts = OwnerWhatsAppDrafts(
+            approvals_db, tenant=tenant, agent=agent, sender=sender,
+        )
         self._token = owner_token_reader(token_file)
 
+    def prepare(self, recipient: str, text: str) -> dict:
+        """Prepare a reviewable draft; never authorize or transmit it."""
+        return self.drafts.prepare(recipient, text)
+
     def send(self, approval_id: str) -> dict:
-        return self.approvals.send_once(
-            approval_id=approval_id, tenant=self.tenant, agent=self.agent,
+        resolved_id, draft = self.drafts.resolve(approval_id)
+        if draft is not None and resolved_id is None:
+            return {
+                "schema": "porcelainberryme.mcp.whatsapp-send.v1",
+                "approval_id": approval_id, "state": draft["state"],
+                "provider_accepted": False, "human_delivered": False,
+            }
+        result = self.approvals.send_once(
+            approval_id=resolved_id or approval_id,
+            tenant=self.tenant, agent=self.agent,
             sender=self.sender, api_token=self._token(),
         )
+        if draft is not None:
+            result["draft_id"] = approval_id
+        return result
 
     def status(self, approval_id: str) -> dict:
-        return self.approvals.status(
-            approval_id=approval_id, tenant=self.tenant,
+        resolved_id, draft = self.drafts.resolve(approval_id)
+        if draft is not None and resolved_id is None:
+            return {
+                "schema": "porcelainberryme.mcp.whatsapp-send.v1",
+                "approval_id": approval_id, "state": draft["state"],
+                "provider_accepted": False, "human_delivered": False,
+            }
+        result = self.approvals.status(
+            approval_id=resolved_id or approval_id, tenant=self.tenant,
             agent=self.agent, sender=self.sender,
         )
+        if draft is not None:
+            result["draft_id"] = approval_id
+        return result

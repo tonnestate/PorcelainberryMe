@@ -79,8 +79,15 @@ def from_existing_whatsapp_event(
     """
     if not isinstance(payload, dict):
         raise ValueError("invalid_whatsapp_payload")
-    if payload.get("from_me") is not False:
-        raise ValueError("outgoing_or_unknown_whatsapp_message")
+    # Match the established TonnEstate/Aurora contract: only explicit
+    # boolean True denotes a message from the owner. An omitted flag is
+    # an incoming event, not a reason to lose the authenticated message.
+    if payload.get("from_me") is True:
+        raise ValueError("outgoing_whatsapp_message")
+    sender = payload.get("sender", "")
+    if (not isinstance(sender, str) or not sender.endswith("@c.us")
+            or sender.endswith("@g.us") or "\r" in sender or "\n" in sender):
+        raise ValueError("invalid_direct_whatsapp_sender")
     return InboundEvent(
         tenant_id=tenant_id, channel="whatsapp",
         external_id=payload.get("message_id", ""),

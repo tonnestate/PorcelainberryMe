@@ -94,6 +94,7 @@ class OwnerMCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             set(instance.registered) - set(default.registered), {
                 "porcelainberryme_whatsapp_inbox",
+                "porcelainberryme_whatsapp_prepare",
                 "porcelainberryme_whatsapp_send",
                 "porcelainberryme_whatsapp_send_status",
             },
@@ -109,7 +110,7 @@ class OwnerMCPTests(unittest.IsolatedAsyncioTestCase):
         )
         capabilities = await self.bridge.capabilities()
         self.assertFalse(capabilities["read_only"])
-        self.assertEqual(len(capabilities["tools"]), 8)
+        self.assertEqual(len(capabilities["tools"]), 9)
 
     async def test_one_approved_send_and_repeated_id_returns_no_second_transport(self):
         approval = self.approve()
@@ -349,7 +350,8 @@ class RealWhatsAppMCPProtocolTests(unittest.IsolatedAsyncioTestCase):
                         await client.initialize()
                         tools = await client.list_tools()
                         names = {tool.name for tool in tools.tools}
-                        self.assertEqual(len(names), 8)
+                        self.assertEqual(len(names), 9)
+                        self.assertIn("porcelainberryme_whatsapp_prepare", names)
                         self.assertIn("porcelainberryme_whatsapp_send", names)
                         self.assertIn("porcelainberryme_whatsapp_send_status", names)
                         self.assertIn("porcelainberryme_whatsapp_inbox", names)

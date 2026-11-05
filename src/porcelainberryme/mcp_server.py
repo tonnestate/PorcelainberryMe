@@ -1,4 +1,4 @@
-"""Read-only MCP visibility into existing authenticated PorcelainberryMe calls.
+"""Read-only-by-default MCP visibility with explicit owner-approved actions.
 
 No new call controller, customer directory, owner-harness authority, media
 session or network listener. The stdio MCP process inherits a trusted
@@ -190,7 +190,8 @@ class MCPCallVisibility:
             tools += ["porcelainberryme_call_me",
                       "porcelainberryme_call_me_status"]
         if self._whatsapp is not None:
-            tools += ["porcelainberryme_whatsapp_send",
+            tools += ["porcelainberryme_whatsapp_prepare",
+                      "porcelainberryme_whatsapp_send",
                       "porcelainberryme_whatsapp_send_status"]
         if self._whatsapp_inbox is not None:
             tools += ["porcelainberryme_whatsapp_inbox"]
@@ -318,6 +319,13 @@ class MCPCallVisibility:
             raise RuntimeError("mcp_call_identity_response_mismatch")
         return {"schema": "porcelainberryme.mcp.call.v1", "call": result}
 
+    async def whatsapp_prepare(self, recipient: str, text: str) -> dict:
+        """Create an inert draft; an independent human must authorize it."""
+        if self._whatsapp is None:
+            raise PermissionError("mcp_whatsapp_not_enabled")
+        await self._verify_identity()
+        return await asyncio.to_thread(self._whatsapp.prepare, recipient, text)
+
     async def whatsapp_send(self, approval_id: str) -> dict:
         """Use exactly one host-approved recipient and message body."""
         if self._whatsapp is None:
@@ -342,7 +350,7 @@ class MCPCallVisibility:
 
 
 def build_server(visibility: MCPCallVisibility):
-    """Register only explicitly defined, side-effect-free tools."""
+    """Register fixed tools; privileged actions require host-bound authorization."""
     if not isinstance(visibility, MCPCallVisibility):
         raise TypeError("mcp_trusted_visibility_required")
     try:
@@ -403,6 +411,15 @@ def build_server(visibility: MCPCallVisibility):
             return json.dumps(await visibility.call_me_status(), ensure_ascii=False)
 
     if visibility._whatsapp is not None:
+        @mcp.tool()
+        async def porcelainberryme_whatsapp_prepare(
+                recipient: str, text: str) -> str:
+            """Create a draft; no message is sent until owner approval."""
+            return json.dumps(
+                await visibility.whatsapp_prepare(recipient, text),
+                ensure_ascii=False,
+            )
+
         @mcp.tool()
         async def porcelainberryme_whatsapp_send(approval_id: str) -> str:
             """Send only one explicitly host-approved WhatsApp message."""
