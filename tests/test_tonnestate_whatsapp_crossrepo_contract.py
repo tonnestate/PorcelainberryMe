@@ -160,6 +160,9 @@ class CrossRepositoryWhatsAppContract(unittest.TestCase):
     def test_full_real_mirror_returns_http_507_and_outbox_retains_then_recovers(self):
         from porcelainberryme.contracts import InboundEvent
 
+        # Exercise the real lower-bound capacity (100 messages), not
+        # a slow 10,000-transaction load test in the PR test matrix.
+        self.pb_mirror.max_rows = 100
         # Directly fill the current private owner mirror to its bounded
         # capacity. This is the receiving service's real SQLite store.
         for i in range(self.pb_mirror.max_rows):
