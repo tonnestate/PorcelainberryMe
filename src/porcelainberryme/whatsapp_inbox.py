@@ -28,9 +28,14 @@ class OwnerWhatsAppInbox:
         self.tenant = tenant
         self.owner_destination = owner_destination
 
-    def recent(self, *, after: int = 0, limit: int = 20) -> dict:
+    def recent(self, *, after: int = 0, limit: int = 20,
+               before: int = 0) -> dict:
         if type(after) is not int or not 0 <= after < (1 << 63):
             raise ValueError("whatsapp_inbox_cursor_invalid")
+        if type(before) is not int or not 0 <= before < (1 << 63):
+            raise ValueError("whatsapp_inbox_previous_cursor_invalid")
+        if after and before:
+            raise ValueError("whatsapp_inbox_cursor_direction_conflict")
         if type(limit) is not int or not 1 <= limit <= 30:
             raise ValueError("whatsapp_inbox_limit_invalid")
         # An existing file may have been replaced; never follow a symlink.
@@ -62,6 +67,13 @@ class OwnerWhatsAppInbox:
                         f"ORDER BY {key_field} ASC LIMIT 1000",
                         (*parameters, after),
                     ).fetchall()
+                elif before:
+                    rows = db.execute(
+                        f"SELECT {key_field},payload FROM {source_table} "
+                        f"WHERE {scope} AND {key_field}<? "
+                        f"ORDER BY {key_field} DESC LIMIT 1000",
+                        (*parameters, before),
+                    ).fetchall()
                 else:
                     rows = db.execute(
                         f"SELECT {key_field},payload FROM {source_table} "
@@ -72,8 +84,14 @@ class OwnerWhatsAppInbox:
             raise RuntimeError("whatsapp_inbox_unavailable") from exc
         matches = []
         cursor = after
+        previous_cursor = 0
         for rowid, raw in rows:
             cursor = max(cursor, rowid)
+            # History scans are DESC, so the last scanned row is the
+            # exclusive upper bound for the next older page. This also
+            # works if this page contained only foreign-owner legacy rows.
+            if not after:
+                previous_cursor = rowid
             try:
                 event = InboundEvent.from_dict(json.loads(raw))
             except (ValueError, TypeError):
@@ -98,5 +116,6 @@ class OwnerWhatsAppInbox:
                        else "existing_authenticated_inbound_ledger"),
             "messages": matches,
             "next_cursor": cursor,
+            "previous_cursor": previous_cursor,
             "truncated": len(matches) >= limit or len(rows) == 1000,
         }
