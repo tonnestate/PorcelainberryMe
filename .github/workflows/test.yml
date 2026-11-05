@@ -38,6 +38,12 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_mcp_protocol.py' -v
       - name: Exercise optional owner WhatsApp MCP stdio and authorization
         run: python -m unittest discover -s tests -p 'test_mcp_whatsapp.py' -v
+      - name: Verify owner draft to human consent lifecycle
+        run: python -m unittest discover -s tests -p 'test_whatsapp_consent.py' -v
+      - name: Verify signed WhatsApp inbox to host-approved original transport
+        run: python -m unittest discover -s tests -p 'test_whatsapp_e2e.py' -v
+      - name: Verify owner WhatsApp production preflight
+        run: python -m unittest discover -s tests -p 'test_whatsapp_preflight.py' -v
 
   asterisk-websocket:
     runs-on: ubuntu-latest
