@@ -339,13 +339,15 @@ class MCPCallVisibility:
         await self._verify_identity()
         return await asyncio.to_thread(self._whatsapp.status, approval_id)
 
-    async def whatsapp_messages(self, after: int = 0, limit: int = 20) -> dict:
-        """Read only previously authenticated, owner-scoped local events."""
+    async def whatsapp_messages(self, after: int = 0, limit: int = 20,
+                                before: int = 0) -> dict:
+        """Read authorized recent, incremental, or older WhatsApp events."""
         if self._whatsapp_inbox is None:
             raise PermissionError("mcp_whatsapp_inbox_not_enabled")
         await self._verify_identity()
         return await asyncio.to_thread(
             self._whatsapp_inbox.recent, after=after, limit=limit,
+            before=before,
         )
 
 
@@ -435,10 +437,12 @@ def build_server(visibility: MCPCallVisibility):
     if visibility._whatsapp_inbox is not None:
         @mcp.tool()
         async def porcelainberryme_whatsapp_inbox(
-                after: int = 0, limit: int = 20) -> str:
-            """Read bounded incoming WhatsApp events from the existing ledger."""
-            return json.dumps(await visibility.whatsapp_messages(after, limit),
-                              ensure_ascii=False)
+                after: int = 0, limit: int = 20,
+                before: int = 0) -> str:
+            """Read new or older owner messages with non-overlapping cursors."""
+            return json.dumps(await visibility.whatsapp_messages(
+                after, limit, before,
+            ), ensure_ascii=False)
 
     return mcp
 
