@@ -176,6 +176,23 @@ reichen dafür nicht aus.
 | I. Compliance und Recovery | Datenschutz, Löschung/Retention, Audit, Backup/Restore, Freigaben und Störfallprozedur | Betrieblich noch abzunehmen |
 | J. ChatGPT-Anruf | Von dieser ChatGPT-Oberfläche verbundene, authentisierte Schreibaktion | Noch keine Connector-Anbindung |
 
+## Geschützte persistente Eingangs-Datenbank
+
+Der bestehende mehrkanalige `Ledger` verweigert jetzt bereits beim Öffnen
+vorhandene Symlinks, mehrfach verlinkte Dateien, fremden Besitz oder für
+Gruppe/Andere lesbare bzw. schreibbare SQLite-Dateien. Auch die laufende
+Verbindung prüft den Dateistatus vor jeder Datenbankoperation erneut.
+Anders als zuvor werden unsichere vorhandene Dateien **nicht**
+automatisch durch `chmod 0600` verändert. Diese Verweigerung ist
+beabsichtigt: Der Hostoperator muss Eigentümer, Dateipfad und
+Berechtigungen prüfen und gegebenenfalls außerhalb des Prozesses
+korrigieren, bevor der Listener wieder gestartet wird. Ein Schreibfehler
+beim signierten Ingress führt zu HTTP 503, nicht zur stillen Annahme.
+CI-Tests prüfen Symlinks, Hardlinks, Rechteänderung und Austausch der
+Datei während des Prozesses sowie den nachfolgenden Wiederanlauf.
+Das ersetzt keine Bewertung der übergeordneten Host-Verzeichnisrechte
+oder einen tatsächlichen Backup-/Restore-Test.
+
 ## Betriebs- und Rollback-Regeln
 
 - Der Host richtet das bereits vorhandene Call-Control- und
