@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 import tempfile
 import threading
@@ -13,7 +12,7 @@ from urllib.request import Request, urlopen
 
 from porcelainberryme.contracts import InboundEvent
 from porcelainberryme.ledger import IdempotencyConflict, Ledger
-from porcelainberryme.server import handler_for, signature
+from porcelainberryme.server import BoundedInboundHTTPServer, handler_for, signature
 from porcelainberryme.whatsapp_inbox import OwnerWhatsAppInbox
 from porcelainberryme.whatsapp_mirror import OwnerWhatsAppMirror
 
@@ -177,7 +176,7 @@ class MirrorLoopbackTests(unittest.TestCase):
             str(path), tenant="owner_tenant",
             owner_destination="verified_owner",
         )
-        self.server = ThreadingHTTPServer(
+        self.server = BoundedInboundHTTPServer(
             ("127.0.0.1", 0),
             handler_for(self.ledger, secret=SECRET, mirror=self.mirror,
                         mirror_secret=MIRROR_SECRET),
@@ -271,7 +270,7 @@ class MirrorLoopbackTests(unittest.TestCase):
         self.assertEqual(self.ledger.pending(tenant_id="owner_tenant"), [])
 
     def test_mirror_endpoint_404_without_opt_in(self):
-        alternate = ThreadingHTTPServer(
+        alternate = BoundedInboundHTTPServer(
             ("127.0.0.1", 0), handler_for(self.ledger, secret=SECRET),
         )
         worker = threading.Thread(target=alternate.serve_forever, daemon=True)

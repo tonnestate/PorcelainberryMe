@@ -35,6 +35,16 @@ verändert weder bestehende Geheimnisse noch die Benutzerverwaltung.
    restriktive Filesystem- und Prozessrechte sowie keinen öffentlichen
    HTTP-Listener. Pfade müssen am realen Host bestätigt werden.
 
+Die bestehende signierte WhatsApp-Eingangsschnittstelle auf
+`127.0.0.1:8873` wird mit einem begrenzten HTTP-Server betrieben:
+standardmäßig maximal 64 gleichzeitige Verbindungen, 10 Sekunden
+Socket-Timeout und sofortiges HTTP 503 bei voller Kapazität. Die
+TonnEstate-Outbox behält abgewiesene Ereignisse für den späteren Replay;
+unter Last werden keine zusätzlichen unbegrenzten Python-Threads erzeugt.
+CI prüft den echten HTTP-503-Grenzfall mit einer blockierten Verbindung
+und die Annahme nach Freigabe des Kapazitätsslots. Ein realer
+VPS-Lasttest bleibt erforderlich.
+
 ## Zusätzliche Korrekturen des Kernprozesses
 
 Die ausgehende Telefonie erkennt jetzt die eindeutige, vom Host
