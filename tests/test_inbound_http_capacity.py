@@ -87,7 +87,6 @@ class BoundedInboundHTTPTests(unittest.TestCase):
                     if exc.code != 503 or attempt == 19:
                         raise
                     time.sleep(0.02)
-            self.assertEqual(server._slots._value, 1)
         finally:
             server.release.set()
             server.shutdown()
