@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
+import sys
 import json
 import os
 from pathlib import Path
@@ -20,6 +22,68 @@ from .whatsapp_mirror import OwnerWhatsAppMirror
 
 MAX_BODY = 65536
 SKEW_SECONDS = 300
+
+
+class BoundedInboundHTTPServer(ThreadingHTTPServer):
+    """Limit loopback ingestion connections and reject excess with HTTP 503.
+
+    Prevent local stalled peers from consuming unlimited request threads or
+    blocking the signed TonnEstate replay worker. No external listener and
+    no new WhatsApp client/session.
+    """
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address, handler, *, max_connections: int = 64,
+                 request_timeout: float = 10):
+        if type(max_connections) is not int or not 1 <= max_connections <= 256:
+            raise ValueError("inbound_http_connection_limit_invalid")
+        if (type(request_timeout) not in (int, float)
+                or not 1 <= request_timeout <= 30):
+            raise ValueError("inbound_http_request_timeout_invalid")
+        if (not isinstance(address, tuple) or len(address) != 2
+                or address[0] != "127.0.0.1"):
+            raise ValueError("inbound_http_loopback_required")
+        self._slots = threading.BoundedSemaphore(max_connections)
+        self._request_timeout = float(request_timeout)
+        super().__init__(address, handler)
+
+    def get_request(self):
+        socket, address = super().get_request()
+        socket.settimeout(self._request_timeout)
+        return socket, address
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\\r\\n"
+                    b"Connection: close\\r\\n"
+                    b"Cache-Control: no-store\\r\\n"
+                    b"Content-Length: 0\\r\\n\\r\\n"
+                )
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+    def handle_error(self, request, client_address):
+        # Never expose caller IDs, request bodies, HMACs or exception details.
+        print("inbound_http_handler_error", file=sys.stderr)
+
 
 
 def signature(secret: str, timestamp: str, payload: bytes) -> str:
@@ -139,7 +203,7 @@ def main():
         )
     # The same private loopback service handles signed observer events.
     # Mirrored WhatsApp messages never enter the actionable inbound queue.
-    server = ThreadingHTTPServer(
+    server = BoundedInboundHTTPServer(
         ("127.0.0.1", 8873),
         handler_for(
             ledger, secret=secret, mirror=mirror, mirror_secret=mirror_secret,
