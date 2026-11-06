@@ -105,6 +105,41 @@ class WhatsAppPreflightTests(unittest.TestCase):
             })["configuration_and_requested_runtime_passed"]
         )
 
+    def test_preflight_rejects_present_but_incompatible_approval_tables(self):
+        damaged = Path(self.temp.name) / "legacy-narrow-approvals.db"
+        with sqlite3.connect(damaged) as db:
+            db.executescript(
+                "CREATE TABLE whatsapp_mcp_approvals "
+                "(approval_id TEXT PRIMARY KEY);"
+                "CREATE TABLE whatsapp_mcp_drafts "
+                "(draft_id TEXT PRIMARY KEY);"
+            )
+        damaged.chmod(0o600)
+        snapshot = whatsapp_preflight.evaluate(env={
+            **self.env, "PB_MCP_WHATSAPP_APPROVALS_DB": str(damaged),
+        })
+        self.assertFalse(snapshot["configuration_and_requested_runtime_passed"])
+        checks = {item["name"]: item["status"] for item in snapshot["checks"]}
+        self.assertEqual(checks["whatsapp_approval_and_draft_sqlite"], "FAIL")
+
+    def test_preflight_rejects_mirror_without_durable_deduplication_index(self):
+        damaged = Path(self.temp.name) / "mirror-without-unique.db"
+        with sqlite3.connect(damaged) as db:
+            db.executescript(
+                "CREATE TABLE whatsapp_owner_mirror ("
+                "seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "tenant TEXT NOT NULL, owner_destination TEXT NOT NULL,"
+                "external_id TEXT NOT NULL, digest TEXT NOT NULL,"
+                "payload TEXT NOT NULL, received_at INTEGER NOT NULL);"
+            )
+        damaged.chmod(0o600)
+        snapshot = whatsapp_preflight.evaluate(env={
+            **self.env, "PB_MCP_WHATSAPP_INBOX_DB": str(damaged),
+        })
+        self.assertFalse(snapshot["configuration_and_requested_runtime_passed"])
+        checks = {item["name"]: item["status"] for item in snapshot["checks"]}
+        self.assertEqual(checks["whatsapp_authenticated_mirror_sqlite"], "FAIL")
+
     def test_network_is_read_only_and_requires_owner_control(self):
         probes = []
         def probe(port, path, *, bearer=""):
