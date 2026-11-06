@@ -258,6 +258,16 @@ can be purged explicitly via host-only
 collector, message API polling, alternate WhatsApp login, or provider
 access is added.
 
+**Runtime database failures:** If the existing private SQLite file becomes
+unreadable or a required table disappears, the signed loopback POST returns
+HTTP 503 with only the static marker `inbound_storage_unavailable`, never
+contact data, message text or exception details. The upstream TonnEstate
+outbox must retain the original event and retry after the host repairs
+storage. A signed event with the wrong owner scope remains HTTP 403; a
+full bounded mirror remains HTTP 507. The live owner-mirror readiness
+probe now rejects missing unique owner/message constraints as well as
+missing columns or a broken SQLite integrity check.
+
 **Durable source recovery:** TonnEstate's complementary
 `porcelainberry_whatsapp_outbox.py` now writes each authorized inbound
 observation to its separate, private SQLite queue **before** any network
