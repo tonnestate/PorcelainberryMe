@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import closing
-from http.server import ThreadingHTTPServer
 import json
 from pathlib import Path
 import tempfile
@@ -21,7 +20,7 @@ from urllib.request import Request, urlopen
 from porcelainberryme.contracts import InboundEvent
 from porcelainberryme.ledger import Ledger
 from porcelainberryme.mcp_server import MCPCallVisibility
-from porcelainberryme.server import handler_for, signature
+from porcelainberryme.server import BoundedInboundHTTPServer, handler_for, signature
 from porcelainberryme.voice_livekit_agent import CallControlClient
 from porcelainberryme.whatsapp_inbox import OwnerWhatsAppInbox
 from porcelainberryme.whatsapp_mcp import OwnerWhatsAppMCP
@@ -73,7 +72,7 @@ class OwnerWhatsAppEndToEndTests(unittest.IsolatedAsyncioTestCase):
             self.inbound_db, tenant="tenantA",
             owner_destination="owner_destination",
         )
-        self.server = ThreadingHTTPServer(
+        self.server = BoundedInboundHTTPServer(
             ("127.0.0.1", 0), handler_for(
                 self.ledger, secret=_INBOUND_SECRET, mirror=self.mirror,
                 mirror_secret=_MIRROR_SECRET,
