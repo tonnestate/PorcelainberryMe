@@ -156,6 +156,47 @@ and corresponding `.timer.example` templates. They must be reviewed,
 installed and enabled by the existing operator with the same private
 `/etc/porcelainberryme/owner-mcp.env` scope as the owner MCP process.
 
+### Supervised private inbound listener (host installation required)
+
+The source package now contains
+`deploy/systemd/porcelainberryme-inbound.service.example`.
+It is a **review-only deployment template**, not an installed unit.
+Install a reviewed copy as `porcelainberryme-inbound.service` through the
+existing host deployment procedure. Unlike WhatsApp provider clients,
+this unit starts **only** the existing signed loopback HTTP intake
+(`python -m porcelainberryme.server`) bound in source to
+`127.0.0.1:8873`. Do not start a second WhatsApp consumer.
+
+Run the listener as the existing `porcelainberryme` service user. Provision
+`/var/lib/porcelainberryme` with the private SQLite file and exclusive
+service-user access, and supply the required
+`/etc/porcelainberryme/voice.env` environment file using the trusted host
+secret manager. That file must provide the existing
+`PORCELAINBERRY_DB` and `PORCELAINBERRY_SIGNING_SECRET`, plus
+`PB_WHATSAPP_MIRROR_ENABLED=1`,
+`PB_WHATSAPP_MIRROR_SIGNING_SECRET`,
+`PB_WHATSAPP_MIRROR_TENANT` and
+`PB_WHATSAPP_MIRROR_DESTINATION`. The mirror signing secret must differ
+from the normal inbound HMAC secret. The unit has
+`ProtectSystem=strict`, restricts persistent writes to
+`/var/lib/porcelainberryme`, and deliberately requires the environment
+file rather than silently skipping startup when it is absent.
+
+After installing the reviewed unit, reload systemd, enable and start
+`porcelainberryme-inbound.service`, and inspect its active state. Verify
+`http://127.0.0.1:8873/v1/owner-whatsapp-mirror/readyz` on the
+**host**: HTTP 200 with owner-mirror readiness is required. HTTP 404
+means opt-in disabled; HTTP 503 means the mirror database is unavailable.
+Separately run the existing
+`python -m porcelainberryme.whatsapp_preflight --network --preflight-only`
+as the authorized owner-MCP service user. All these checks are local,
+non-sending readiness checks; none proves an actual WhatsApp delivery.
+
+Review the TonnEstate replay worker unit and matching owner environment,
+including the original n8n HTTP-503 retry contract, **before** opening
+the mirror to real incoming events. Supervision, database integrity and
+preflight results alone are not a production acceptance.
+
 **Required live acceptance before use:** Verify a real authenticated
 n8n direct-contact incoming event, exactly-one durable outbox replay,
 MCP inbox visibility and subject isolation, explicit human approval of

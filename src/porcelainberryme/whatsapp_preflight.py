@@ -20,7 +20,34 @@ from .whatsapp_mcp import private_file, owner_token_reader
 _SCOPE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 
 
+_REQUIRED_COLUMNS = {
+    "whatsapp_mcp_approvals": {
+        "approval_id", "tenant", "agent", "sender", "recipient",
+        "body", "consent_hash", "expires_at", "state",
+    },
+    "whatsapp_mcp_drafts": {
+        "draft_id", "tenant", "agent", "sender", "recipient", "body",
+        "fingerprint", "expires_at", "state", "approval_id",
+    },
+    "whatsapp_owner_mirror": {
+        "seq", "tenant", "owner_destination", "external_id",
+        "digest", "payload", "received_at",
+    },
+}
+_UNIQUE_KEYS = {
+    "whatsapp_mcp_approvals": ("approval_id",),
+    "whatsapp_mcp_drafts": ("draft_id",),
+    "whatsapp_owner_mirror": ("tenant", "owner_destination", "external_id"),
+}
+
+
 def _sqlite_has_tables(path: str, tables: set[str]) -> bool:
+    """Probe real owner schemas without creating or migrating a database.
+
+    A table-name-only probe used to pass even if required columns or the
+    deduplication constraint were missing; that falsely reported ready
+    while MCP approval/ingest would fail at first use.
+    """
     try:
         private_file(path)
         uri = "file:" + quote(str(Path(path)), safe="/") + "?mode=ro"
@@ -31,12 +58,30 @@ def _sqlite_has_tables(path: str, tables: set[str]) -> bool:
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 )
             }
-            return (tables.issubset(actual)
-                    and db.execute("PRAGMA quick_check(1)").fetchone()[0] == "ok")
+            if not tables.issubset(actual):
+                return False
+            for name in tables:
+                required = _REQUIRED_COLUMNS.get(name)
+                unique = _UNIQUE_KEYS.get(name)
+                if required is None or unique is None:
+                    return False  # Never interpolate unrecognized table names.
+                present = {
+                    row[1] for row in db.execute(f"PRAGMA table_info({name})")
+                }
+                if not required.issubset(present):
+                    return False
+                unique_indexes = [
+                    row[1] for row in db.execute(f"PRAGMA index_list({name})")
+                    if row[2] == 1
+                ]
+                if not any(tuple(
+                    row[2] for row in db.execute(f"PRAGMA index_info({index})")
+                ) == unique for index in unique_indexes):
+                    return False
+            return db.execute("PRAGMA quick_check(1)").fetchone()[0] == "ok"
     except (OSError, PermissionError, ValueError, sqlite3.Error,
             TypeError, IndexError):
         return False
-
 
 def _owner_token_file(path: str) -> bool:
     try:

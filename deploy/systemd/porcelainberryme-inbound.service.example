@@ -1,0 +1,41 @@
+# TEMPLATE ONLY. Install only after reviewing the existing host layout,
+# service principal, environment file permissions and loopback firewall.
+# This is the PorcelainberryMe signed intake listener, NOT a WhatsApp client.
+[Unit]
+Description=PorcelainberryMe signed inbound and owner WhatsApp mirror (loopback)
+After=network.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=porcelainberryme
+Group=porcelainberryme
+WorkingDirectory=/opt/porcelainberryme
+# Required: must fail to start if secrets/config are missing. Do not add '-'.
+EnvironmentFile=/etc/porcelainberryme/voice.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+# The program binds only 127.0.0.1:8873. No WhatsApp login or polling.
+ExecStart=/opt/porcelainberryme/venv/bin/python -m porcelainberryme.server
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+StateDirectory=porcelainberryme
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/porcelainberryme
+RestrictAddressFamilies=AF_UNIX AF_INET
+CapabilityBoundingSet=
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
