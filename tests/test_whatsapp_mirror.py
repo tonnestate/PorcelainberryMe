@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 import tempfile
 import threading
@@ -235,6 +236,66 @@ class MirrorLoopbackTests(unittest.TestCase):
                 self.mirror.ingest(event())
         finally:
             file_path.chmod(0o600)
+
+    def test_private_store_permission_outage_returns_retryable_503(self):
+        path = Path(self.mirror.database)
+        path.chmod(0o644)
+        try:
+            with self.assertRaises(HTTPError) as outcome:
+                self.post(event(external_id="disk-private-error").to_dict())
+            self.assertEqual(outcome.exception.code, 503)
+            self.assertEqual(
+                json.loads(outcome.exception.read()),
+                {"error": "inbound_storage_unavailable"},
+            )
+        finally:
+            path.chmod(0o600)
+        # The same signed event is still admissible after host repair.
+        with self.post(event(external_id="disk-private-error").to_dict()) as reply:
+            self.assertEqual(reply.status, 202)
+
+    def test_mirror_sqlite_schema_outage_returns_retryable_503(self):
+        with sqlite3.connect(self.mirror.database) as db:
+            db.execute("DROP TABLE whatsapp_owner_mirror")
+        with self.assertRaises(HTTPError) as outcome:
+            self.post(event(external_id="broken-mirror").to_dict())
+        self.assertEqual(outcome.exception.code, 503)
+        self.assertEqual(
+            json.loads(outcome.exception.read()),
+            {"error": "inbound_storage_unavailable"},
+        )
+
+    def test_original_inbound_sqlite_outage_also_returns_503(self):
+        with sqlite3.connect(self.mirror.database) as db:
+            db.execute("DROP TABLE inbound")
+        with self.assertRaises(HTTPError) as outcome:
+            self.post(
+                event(external_id="broken-actionable").to_dict(),
+                endpoint="/v1/inbound", key=SECRET,
+            )
+        self.assertEqual(outcome.exception.code, 503)
+        self.assertEqual(
+            json.loads(outcome.exception.read()),
+            {"error": "inbound_storage_unavailable"},
+        )
+
+    def test_mirror_without_owner_message_unique_key_is_not_ready(self):
+        unsafe = Path(self.temp.name) / "mirror-no-unique.sqlite3"
+        Ledger(unsafe)
+        with sqlite3.connect(unsafe) as db:
+            db.execute(
+                "CREATE TABLE whatsapp_owner_mirror ("
+                "seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "tenant TEXT NOT NULL, owner_destination TEXT NOT NULL,"
+                "external_id TEXT NOT NULL, digest TEXT NOT NULL,"
+                "payload TEXT NOT NULL, received_at INTEGER NOT NULL)"
+            )
+        mirror = OwnerWhatsAppMirror(
+            str(unsafe), tenant="owner_tenant",
+            owner_destination="verified_owner",
+        )
+        self.assertFalse(mirror.ready())
+        self.assertTrue(self.mirror.ready())
 
     def test_real_signed_http_idempotency_and_no_agent_queue(self):
         with self.post(event().to_dict()) as response:
