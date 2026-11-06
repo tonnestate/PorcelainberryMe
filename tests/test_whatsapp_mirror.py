@@ -254,6 +254,28 @@ class MirrorLoopbackTests(unittest.TestCase):
         with self.post(event(external_id="disk-private-error").to_dict()) as reply:
             self.assertEqual(reply.status, 202)
 
+    def test_actionable_ingress_refuses_repermissioned_shared_db(self):
+        path = Path(self.ledger.database)
+        path.chmod(0o644)
+        try:
+            with self.assertRaises(HTTPError) as response:
+                self.post(
+                    event(external_id="unsafe-ledger").to_dict(),
+                    endpoint="/v1/inbound", key=SECRET,
+                )
+            self.assertEqual(response.exception.code, 503)
+            self.assertEqual(
+                json.loads(response.exception.read()),
+                {"error": "inbound_storage_unavailable"},
+            )
+        finally:
+            path.chmod(0o600)
+        with self.post(
+            event(external_id="unsafe-ledger").to_dict(),
+            endpoint="/v1/inbound", key=SECRET,
+        ) as response:
+            self.assertEqual(response.status, 202)
+
     def test_mirror_sqlite_schema_outage_returns_retryable_503(self):
         with sqlite3.connect(self.mirror.database) as db:
             db.execute("DROP TABLE whatsapp_owner_mirror")
