@@ -165,7 +165,11 @@ Install a reviewed copy as `porcelainberryme-inbound.service` through the
 existing host deployment procedure. Unlike WhatsApp provider clients,
 this unit starts **only** the existing signed loopback HTTP intake
 (`python -m porcelainberryme.server`) bound in source to
-`127.0.0.1:8873`. Do not start a second WhatsApp consumer.
+`127.0.0.1:8873`. The signed HTTP listener is now capped at **64 concurrent
+connections** (configurable constructor bound 1–256), uses a **10-second
+per-socket timeout**, and immediately returns HTTP 503 at capacity. This
+preserves the upstream TonnEstate retry/backpressure semantics; it does not
+silently acknowledge an event that the server could not process. Do not start a second WhatsApp consumer.
 
 Run the listener as the existing `porcelainberryme` service user. Provision
 `/var/lib/porcelainberryme` with the private SQLite file and exclusive
