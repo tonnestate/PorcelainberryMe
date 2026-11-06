@@ -84,9 +84,24 @@ class OwnerWhatsAppMirror:
                     "seq", "tenant", "owner_destination", "external_id",
                     "digest", "payload", "received_at",
                 }
-                return (required.issubset(cols)
-                        and db.execute("PRAGMA quick_check(1)").fetchone()[0]
-                        == "ok")
+                if not required.issubset(cols):
+                    return False
+                # The live readiness endpoint must verify the same durable
+                # owner/event identity fence as the offline release gate.
+                # A present table without its unique event key is unsafe.
+                keys = ("tenant", "owner_destination", "external_id")
+                indexes = [
+                    row[1] for row in db.execute(
+                        "PRAGMA index_list(whatsapp_owner_mirror)"
+                    ) if row[2] == 1
+                ]
+                if not any(tuple(
+                    item[2] for item in db.execute(
+                        f"PRAGMA index_info({index})"
+                    )
+                ) == keys for index in indexes):
+                    return False
+                return db.execute("PRAGMA quick_check(1)").fetchone()[0] == "ok"
         except (OSError, ValueError, PermissionError, sqlite3.Error,
                 IndexError, TypeError):
             return False

@@ -13,6 +13,7 @@ import threading
 import sys
 import json
 import os
+import sqlite3
 from pathlib import Path
 import time
 
@@ -162,8 +163,20 @@ def handler_for(ledger: Ledger, *, secret: str,
             try:
                 event = InboundEvent.from_dict(json.loads(payload))
                 outcome = mirror.ingest(event) if is_mirror else ledger.ingest(event)
-            except PermissionError:
-                self._reply(403, {"error": "whatsapp_owner_scope_rejected"})
+            except PermissionError as exc:
+                # Authorization scope violations are client errors; a
+                # replaced/inaccessible private SQLite file is an outage,
+                # not a permanently forbidden provider message. Upstream
+                # can retry a 503 without losing its original event ID.
+                if str(exc) == "whatsapp_mirror_owner_scope_rejected":
+                    self._reply(403, {"error": "whatsapp_owner_scope_rejected"})
+                else:
+                    self._reply(503, {"error": "inbound_storage_unavailable"})
+                return
+            except (sqlite3.Error, OSError):
+                # Disk-full, locked/corrupt schema and file I/O failures
+                # must never be misreported as successful or expose data.
+                self._reply(503, {"error": "inbound_storage_unavailable"})
                 return
             except OverflowError:
                 self._reply(507, {"error": "inbound_capacity_exceeded"})
