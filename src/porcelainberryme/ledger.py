@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import secrets
 import sqlite3
+import stat
 import threading
 
 from .contracts import InboundEvent, OutboundMessage, fingerprint
@@ -42,11 +43,17 @@ class Ledger:
         location = Path(self.database)
         location.parent.mkdir(parents=True, exist_ok=True)
         try:
-            fd = os.open(location, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+            fd = os.open(
+                location, os.O_RDWR | os.O_CREAT | os.O_EXCL |
+                getattr(os, "O_NOFOLLOW", 0), 0o600,
+            )
         except FileExistsError:
-            location.chmod(0o600)
+            pass
         else:
             os.close(fd)
+        # An existing file must be private already. Never chmod a
+        # supplied symlink target, hardlink or another user's database.
+        self._verify_private_database()
         self._lock = threading.RLock()
         with self._db() as db:
             db.executescript("""
@@ -83,8 +90,22 @@ class Ledger:
             if "handler_kind" not in columns:
                 db.execute("ALTER TABLE inbound ADD COLUMN handler_kind TEXT")
 
+    def _verify_private_database(self) -> None:
+        try:
+            info = os.lstat(self.database)
+        except OSError:
+            raise PermissionError("ledger_database_unavailable") from None
+        if (not stat.S_ISREG(info.st_mode)
+                or stat.S_IMODE(info.st_mode) & 0o077
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1):
+            raise PermissionError("ledger_database_not_private")
+
     @contextmanager
     def _db(self):
+        # Recheck before every ledger read/write to reject a swapped,
+        # newly public or missing owner DB during a long-running service.
+        self._verify_private_database()
         db = sqlite3.connect(self.database, timeout=10)
         try:
             db.row_factory = sqlite3.Row
