@@ -19,7 +19,7 @@ UNIT = ROOT / "deploy/systemd/porcelainberryme-inbound.service.example"
 
 class WhatsAppInboundSystemdTests(unittest.TestCase):
     def setUp(self):
-        self.unit = ConfigParser(interpolation=None)
+        self.unit = ConfigParser(interpolation=None, strict=False)
         with UNIT.open(encoding="utf-8") as stream:
             self.unit.read_file(stream)
         self.service = self.unit["Service"]
