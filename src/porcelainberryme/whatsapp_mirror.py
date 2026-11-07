@@ -13,7 +13,7 @@ import sqlite3
 import time
 from urllib.parse import quote
 
-from .whatsapp_mcp import private_file
+from .whatsapp_mcp import private_file, private_sqlite
 
 from .contracts import InboundEvent
 from .ledger import IdempotencyConflict
@@ -60,11 +60,8 @@ class OwnerWhatsAppMirror:
 
     @contextmanager
     def _db(self):
-        private_file(self.database)
-        with closing(sqlite3.connect(self.database, timeout=10)) as db:
-            db.row_factory = sqlite3.Row
-            with db:
-                yield db
+        with private_sqlite(self.database) as db:
+            yield db
 
     def ready(self) -> bool:
         """Probe only this configured owner mirror, not generic HTTP liveness.

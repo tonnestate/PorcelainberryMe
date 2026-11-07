@@ -14,7 +14,7 @@ import secrets
 import sqlite3
 import time
 
-from .whatsapp_mcp import OwnerWhatsAppApprovals, private_file
+from .whatsapp_mcp import OwnerWhatsAppApprovals, private_file, private_sqlite
 
 _DRAFT = re.compile(r"^[a-f0-9]{32}$")
 _CONTACT = re.compile(r"^[0-9]{5,20}@c\.us$")
@@ -49,11 +49,8 @@ class OwnerWhatsAppDrafts:
 
     @contextmanager
     def _db(self):
-        private_file(self.database)
-        with closing(sqlite3.connect(self.database, timeout=10)) as db:
-            db.row_factory = sqlite3.Row
-            with db:
-                yield db
+        with private_sqlite(self.database) as db:
+            yield db
 
     @staticmethod
     def _public(draft) -> dict:

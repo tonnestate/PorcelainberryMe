@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from porcelainberryme.whatsapp_consent import OwnerWhatsAppDrafts
-from porcelainberryme.whatsapp_mcp import OwnerWhatsAppMCP
+from porcelainberryme.whatsapp_mcp import OwnerWhatsAppMCP, private_file, owner_token_reader
 from porcelainberryme.whatsapp_owner_consent import main as consent_main
 
 
@@ -37,6 +37,41 @@ class OwnerDraftLifecycleTests(unittest.TestCase):
 
     def draft(self, text="Überweisung 1.234,56 € um 18:05 Uhr – สวัสดี"):
         return self.owner.prepare("49151234567@c.us", text)
+
+    def test_hardlinked_owner_database_or_bearer_is_rejected(self):
+        alias = Path(self.root.name) / "linked-approvals.sqlite3"
+        os.link(self.database, alias)
+        try:
+            with self.assertRaisesRegex(PermissionError, "private_file_permissions"):
+                self.draft()
+            with self.assertRaisesRegex(PermissionError, "private_file_permissions"):
+                private_file(self.database)
+        finally:
+            alias.unlink()
+        bearer_alias = Path(self.root.name) / "linked-owner-bearer"
+        os.link(self.token_file, bearer_alias)
+        try:
+            with self.assertRaisesRegex(PermissionError, "private_file_permissions"):
+                owner_token_reader(str(self.token_file))
+        finally:
+            bearer_alias.unlink()
+        self.assertEqual(self.draft()["state"], "DRAFT")
+
+    def test_owner_consent_rejects_database_replacement_during_transaction(self):
+        original = Path(self.database)
+        backup = Path(self.root.name) / "original-owner-db"
+        substitute = Path(self.root.name) / "substitute-owner-db"
+        substitute.touch(mode=0o600)
+        try:
+            with self.assertRaisesRegex(PermissionError, "private_file_replaced"):
+                with self.store._db() as db:
+                    db.execute("SELECT 1")
+                    original.rename(backup)
+                    substitute.rename(original)
+        finally:
+            if backup.exists():
+                backup.replace(original)
+        self.assertEqual(self.draft()["state"], "DRAFT")
 
     def test_no_transmission_without_human_consent(self):
         item = self.draft()
