@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 import tempfile
@@ -51,6 +52,34 @@ class MirrorStorageTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_private_mirror_refuses_hardlinked_sqlite(self):
+        alias = Path(self.temp.name) / "hardlinked-mirror.sqlite3"
+        os.link(self.location, alias)
+        try:
+            with self.assertRaisesRegex(PermissionError, "private_file_permissions"):
+                self.mirror.ingest(event(external_id="never-accepted"))
+            with self.assertRaisesRegex(PermissionError, "private_file_permissions"):
+                self.inbox.recent()
+        finally:
+            alias.unlink()
+        self.assertTrue(self.mirror.ingest(event())["new"])
+
+    def test_private_mirror_refuses_database_replaced_before_commit(self):
+        original = Path(self.location)
+        parked = Path(self.temp.name) / "parked-mirror.sqlite3"
+        substitute = Path(self.temp.name) / "substitute-mirror.sqlite3"
+        substitute.touch(mode=0o600)
+        try:
+            with self.assertRaisesRegex(PermissionError, "private_file_replaced"):
+                with self.mirror._db() as db:
+                    db.execute("SELECT 1")
+                    original.rename(parked)
+                    substitute.rename(original)
+        finally:
+            if parked.exists():
+                parked.replace(original)
+        self.assertTrue(self.mirror.ingest(event())["new"])
 
     def test_passive_inbox_does_not_create_any_claimable_agent_work(self):
         self.assertTrue(self.mirror.ingest(event())["new"])
