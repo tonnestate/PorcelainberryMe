@@ -43,9 +43,33 @@ def private_file(value: str, *, create: bool = False) -> str:
         raise PermissionError("whatsapp_private_file_missing") from exc
     if (not stat.S_ISREG(info.st_mode)
             or stat.S_IMODE(info.st_mode) & 0o077
-            or info.st_uid != os.geteuid()):
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1):
         raise PermissionError("whatsapp_private_file_permissions")
     return value
+
+
+@contextmanager
+def private_sqlite(database: str):
+    """Transactional owner DB, fenced to one private on-disk inode.
+
+    Validate both around SQLite connection setup and before commit so a
+    path replaced mid-transaction cannot be treated as the authorized store.
+    """
+    private_file(database)
+    original = os.lstat(database)
+    with closing(sqlite3.connect(database, timeout=10)) as db:
+        db.row_factory = sqlite3.Row
+        with db:
+            def verify():
+                private_file(database)
+                current = os.lstat(database)
+                if ((current.st_dev, current.st_ino)
+                        != (original.st_dev, original.st_ino)):
+                    raise PermissionError("whatsapp_private_file_replaced")
+            verify()
+            yield db
+            verify()
 
 
 def owner_token_reader(filename: str):
@@ -57,7 +81,8 @@ def owner_token_reader(filename: str):
             info = os.fstat(fd)
             if (not stat.S_ISREG(info.st_mode)
                     or stat.S_IMODE(info.st_mode) & 0o077
-                    or info.st_uid != os.geteuid()):
+                    or info.st_uid != os.geteuid()
+                    or info.st_nlink != 1):
                 raise PermissionError("whatsapp_token_permissions")
             with os.fdopen(fd, encoding="utf-8") as stream:
                 fd = -1
@@ -93,14 +118,8 @@ class OwnerWhatsAppApprovals:
 
     @contextmanager
     def _db(self):
-        # Re-check at every consent/dispatch operation, not only startup.
-        # The long-running MCP process must reject a replaced, symlinked
-        # or newly world-readable private approval database.
-        private_file(self.database)
-        with closing(sqlite3.connect(self.database, timeout=10)) as db:
-            db.row_factory = sqlite3.Row
-            with db:
-                yield db
+        with private_sqlite(self.database) as db:
+            yield db
 
     @staticmethod
     def scope(tenant, agent, sender):
